@@ -1,0 +1,27 @@
+# requirements.txt - Phase 1 only
+# Run: pip install -r requirements.txt (inside your activated venv)
+
+langchain
+# The main framework. Gives us the SitemapLoader tool we'll use
+# to pull content from itcybx.co.uk's sitemap.
+
+langchain-community
+# LangChain splits its tools into packages. SitemapLoader specifically
+# lives in this "community" package, not the core langchain package.
+# Both are needed together.
+
+beautifulsoup4
+# A tool for reading/parsing HTML pages and pulling out clean text.
+# SitemapLoader uses this internally to strip out a page's actual
+# content from all the surrounding HTML tags.
+
+requests
+# The most basic tool for "go fetch this URL from the internet."
+# SitemapLoader uses this internally too, to actually download
+# each page before beautifulsoup4 cleans it up.
+
+python-dotenv
+# Lets our Python code read values from the .env file
+# (like API keys later). Not strictly needed yet in Phase 1
+# since we have no keys, but we install it now so it's ready
+# for Phase 2 without needing another install step.
