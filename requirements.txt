@@ -25,3 +25,6 @@ python-dotenv
 # (like API keys later). Not strictly needed yet in Phase 1
 # since we have no keys, but we install it now so it's ready
 # for Phase 2 without needing another install step.
+
+lxml
+# Required by LangChain's SitemapLoader to parse XML sitemaps efficiently.
