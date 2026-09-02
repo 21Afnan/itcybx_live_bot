@@ -1,0 +1,94 @@
+SOURCE_URL: https://itcybx.co.uk/portfolio/rescuing-a-fragmented-jewelry-brand-in-pakistan-via-account-liquidity/
+
+Rescuing a Fragmented Jewelry Brand in Pakistan via Account Liquidity - E-commerce Growth Studio
+
+Call Us: +92 310 488 7999 
+
+Search
+
+Marketing Web DesignRescuing a Fragmented Jewelry Brand in Pakistan via Account LiquidityHomePortfolios Rescuing a Fragmented Jewelry Brand in Pakistan via Account Liquidity
+
+iT CYBX PERFORMANCE LAB
+Rescuing a Fragmented Jewelry Brand in Pakistan via Account Liquidity
+How converting chaotic, sub-1.0x ROAS multi-campaign structures into a single consolidated CBO framework generated Rs. 884,975.65 in profitable sales.
+1. Executive Summary & The Baseline Crisis
+An online jewelry store targeting the fashion-centric market in Pakistan approached iT CYBX while locked in a destructive ad-spend pattern. The brand was utilizing an aggressive multi-campaign segmentation structure, distributing thin budgets across countless independent sets (Catalog Sales, Video Interactions, and general Engagement campaigns). This fragmentation severely damaged Meta’s pixel learning capacity.
+The pre-optimization performance metrics were entirely unsustainable for e-commerce survival: catalog testing and seasonal video sales dragged down return metrics to an absolute floor of 0.12x to 0.24x ROAS, with single-purchase acquisition friction climbing to an unacceptable Rs. 4,856.64. Overlapping audience bids and scattered tracking signals diluted every rupee spent, forcing the store into a net-negative cash position.
+ Project NameRescuing a Fragmented Jewelry Brand in Pakistan via Account LiquidityIndustry SegmentPremium Fashion
+JewelryTarget MarketPakistan (National
+Market)
+Core SolutionSingle Consolidated
+CBO
+Primary ResultProfitable Scale
+Turnaround
+ Share
+ TagsAgencyAIARCreative
+
+2. Complete Ad Account Performance Audit Breakdown
+A cross-examination of historical logs reveals the performance delta before and after the architecture intervention managed by iT CYBX:
+
+Campaign Structure & Strategy
+Amount Spent
+Avg. CPC
+Purchases
+Cost / Result
+Purchase ROAS
+
+PK_CBO_Iryzo_Yel… (iT CYBX Consolidate)
+Rs. 266,103.78
+Rs. 8.24
+523
+Rs. 508.80
+3.33x
+
+Reviews Video Sales (Historic Baseline)
+Rs. 6,456.91
+Rs. 21.89
+3
+Rs. 2,152.30
+0.24x
+
+All products Cat Sales (Historic Baseline)
+Rs. 4,856.64
+Rs. 12.61
+1
+Rs. 4,856.64
+0.12x
+
+11-11 Video Test Sales (Historic Baseline)
+Rs. 5,003.64
+Rs. 21.38
+3
+Rs. 1,167.88
+0.99x
+
+11-11 Sales Campaign (Historic Baseline)
+Rs. 3,347.61
+Rs. 29.37
+2
+Rs. 1,673.81
+1.10x
+
+Catalog All PP Sales (Historic Baseline)
+Rs. 1,678.86
+Rs. 16.30
+0
+—
+—
+
+3. The Turnaround Engineering Framework
+
+The Aggregation Pivot (Account Liquidity): Instead of spreading out ad budgets across multiple thin campaigns, iT CYBX pulled down all fragmented assets and combined them into a single high-signal Campaign Budget Optimization (CBO) environment. This immediate centralization funneled Rs. 266,103.78 of volume into a clear target pipeline, letting Meta complete its conversion loops quickly.
+Cost Per Click Compression: Under the old ad setup, poor copy choices pushed CPC costs up as high as Rs. 21.38 to Rs. 29.37. By reworking hooks to appeal directly to organic fashion trends in Pakistan, we brought the average cost per click down to a highly efficient Rs. 8.24.
+Target Acquisition Savings: By stabilizing the delivery setup, individual purchase acquisition costs fell from a historic peak of Rs. 4,856.64 down to an optimized baseline of Rs. 508.80, safely securing profitable purchase conversions.
+
+4. Verified Ad Manager Proof Logs & Assets
+
+Before
+
+After
+
+5. Strategic Scale Conclusion
+This complete structural overhaul cleanly proves that scaling an e-commerce jewelry presence inside Pakistan’s digital market relies entirely on data signal concentration. By cutting out structural fragmentation and relying on a unified account pipeline, iT CYBX turned a negative testing budget into a highly reliable acquisition engine, establishing a clear template for long-term profitable retail growth.
+
+Next
