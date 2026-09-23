@@ -1,10 +1,7 @@
 SOURCE_URL: https://itcybx.co.uk/contact-us/
+LANGUAGE: en
 
 Contact Us - E-commerce Growth Studio
-
-Call Us: +92 310 488 7999 
-
-Search
 
 Contact UsHomeContact Us
 

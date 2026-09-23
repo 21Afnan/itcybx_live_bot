@@ -1,10 +1,7 @@
 SOURCE_URL: https://itcybx.co.uk/pricing-plans/
+LANGUAGE: en
 
 Pricing Plans - E-commerce Growth Studio
-
-Call Us: +92 310 488 7999 
-
-Search
 
 Pricing PlansHomePricing Plans
 
@@ -16,7 +13,7 @@ $150
 
 GROWTH AUDIT 
 
-2-3 daysA focused, paid diagnosis of your store and marketing. We find exactly where you're losing sales — and what to fix first.What's includedStore & conversion review — speed, mobile, product pages, checkoutFunnel analysis — where visitors drop off, and whyMarketing review — ad account health, spend efficiency, channel mixPrioritized findings report — ranked by impact vs. effortA walkthrough call to talk it throughWhat you get: a clear, written report yours to keep and act on, with us or anyone. Outcome: you know precisely where your revenue leaks, and your next move.
+2-3 daysA focused, paid diagnosis of your store and marketing. We find exactly where you're losing sales and what to fix first.What's includedStore & conversion review, speed, mobile, product pages, checkout.Funnel analysis where visitors drop off, and whyMarketing review ad account health, spend efficiency, channel mixPrioritized findings report ranked by impact vs. effortA walkthrough call to talk it throughWhat you get: a clear, written report yours to keep and act on, with us or anyone. Outcome: you know precisely where your revenue leaks, and your next move.
 
 Book Your Growth Audit
 
@@ -24,18 +21,7 @@ GROWTH SPRINT
 
 GROWTH SPRINT 
 
-Scoped from your audit typically 1-3 months
-
-We execute the priority fixes the audit surfaced. A defined project, a defined result — so you see real improvement before any ongoing commitment.
-What's included (scoped to what your store needs)
-
-Store & conversion optimization — the fixes that move revenue
-Funnel & CRO improvements
-Creative & campaign setup — ad creative, landing, tracking
-Implementation of your audit's top priorities
-
-Why it's quoted, not fixed: every store needs something different. We price the sprint to your actual findings — never a padded one-size package.
-Outcome: the highest-impact fixes, done — and proof we deliver.
+Scoped from your audit typically 1-3 monthsWe execute the priority fixes the audit surfaced. A defined project, a defined result so you see real improvement before any ongoing commitment.What's included (scoped to what your store needs)Store & conversion optimization the fixes that move revenueFunnel & CRO improvementsCreative & campaign setup, ad creative, landing, trackingImplementation of your audit's top prioritiesWhy it's quoted, not fixed: every store needs something different. We price the sprint to your actual findings never a padded one-size package.Outcome: the highest-impact fixes, done and proof we deliver.
 
 Get a Quote
 
@@ -43,7 +29,7 @@ GROWTH RETAINER
 
 GROWTH RETAINER
 
-Tailored monthlyOnce it's working, we run and scale it every month — as your growth partner, accountable to revenue.What's included (tailored to your stage)Marketing management — paid social, Google Ads, email & retentionContinuous CRO & testingStore maintenance & optimizationMonthly reporting & strategyCreative & content to keep campaigns freshWhy it's quoted, not fixed: your retainer matches your store's stage, channels, and goals.Outcome: compounding monthly growth, while you focus on the brand.
+Tailored monthlyOnce it's working, we run and scale it every month as your growth partner, accountable to revenue.What's included (tailored to your stage)Marketing management paid social, Google Ads, email & retentionContinuous CRO & testingStore maintenance & optimizationMonthly reporting & strategyCreative & content to keep campaigns freshWhy it's quoted, not fixed: your retainer matches your store's stage, channels, and goals.Outcome: compounding monthly growth, while you focus on the brand.
 
 Get a Quote
 
@@ -53,19 +39,19 @@ $150
 
 Growth Audit 
 
-Store & conversion review — speed, mobile, product pages, checkoutFunnel analysis — where visitors drop off, and whyMarketing review — ad account health, spend efficiency, channel mixPrioritized findings report — ranked by impact vs. effortA walkthrough call to talk it through
+Store & conversion review speed, mobile, product pages, checkoutFunnel analysis where visitors drop off, and whyMarketing review ad account health, spend efficiency, channel mixPrioritized findings report ranked by impact vs. effortA walkthrough call to talk it through
 
 Book Your Growth Audit 
 
  Growth Sprint 
 
-Store & conversion optimization — the fixes that move revenueFunnel & CRO improvementsCreative & campaign setup — ad creative, landing, trackingImplementation of your audit's top priorities
+Store & conversion optimization the fixes that move revenueFunnel & CRO improvementsCreative & campaign setup ad creative, landing, trackingImplementation of your audit's top priorities
 
 Get a Quote
 
  Growth Retainer 
 
-Marketing management — paid social, Google Ads, email & retentionContinuous CRO & testingStore maintenance & optimizationMonthly reporting & strategyCreative & content to keep campaigns fresh
+Marketing management paid social, Google Ads, email & retentionContinuous CRO & testingStore maintenance & optimizationMonthly reporting & strategyCreative & content to keep campaigns fresh
 
 Get a Quote
 
@@ -102,7 +88,7 @@ Best for“Grow it long-term”
 
 How pricing works 
 
-The audit is the only fixed, public price (USD 150). It’s the simplest way to start.Sprint & retainer are scoped, not listed — because real pricing depends on what your store actually needs. The audit tells us (and you) exactly that, so the quote is honest, not guessed.You can start anywhere. Most begin with the audit. If you already know you want to move fast, request a quote for the sprint or retainer directly. 
+The audit is the only fixed, public price (USD 150). It’s the simplest way to start.Sprint & retainer are scoped, not listed because real pricing depends on what your store actually needs. The audit tells us (and you) exactly that, so the quote is honest, not guessed.You can start anywhere. Most begin with the audit. If you already know you want to move fast, request a quote for the sprint or retainer directly. 
 
 Contact Us 
 

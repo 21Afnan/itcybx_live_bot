@@ -1,10 +1,7 @@
 SOURCE_URL: https://itcybx.co.uk/cookie-policy/
+LANGUAGE: en
 
 Cookie Policy - E-commerce Growth Studio
-
-Call Us: +92 310 488 7999 
-
-Search
 
 Cookie PolicyHomeCookie Policy
 

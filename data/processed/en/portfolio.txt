@@ -1,10 +1,7 @@
 SOURCE_URL: https://itcybx.co.uk/portfolio/
+LANGUAGE: en
 
 Portfolios Archive - E-commerce Growth Studio
-
-Call Us: +92 310 488 7999 
-
-Search
 
 ArchiveHomePortfolio
 
