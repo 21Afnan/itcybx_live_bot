@@ -14,8 +14,10 @@ __pycache__/
 *$py.class
 .pytest_cache/
 
-# Data
+# Data & Storage
 data/raw/
+data/*.json
+!data/processed/
 
 # IDE & Editor Configs
 .vscode/

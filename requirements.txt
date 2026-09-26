@@ -30,3 +30,8 @@ lxml
 python-dotenv
 pydantic
 pydantic-settings
+
+# API & Web Server
+fastapi
+uvicorn
+redis

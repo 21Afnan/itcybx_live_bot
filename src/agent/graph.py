@@ -10,6 +10,8 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from src.config.settings import MISTRAL_API_KEY, LLM_MODEL
 from src.tools.faq_tool import search_knowledge_base
+from src.tools.lead_tool import capture_lead
+from src.tools.escalation_tool import escalate_to_human
 from src.tools.booking_tool import check_availability, book_meeting
 from src.agent.prompts_en import SYSTEM_PROMPT_EN
 from src.agent.prompts_ar import SYSTEM_PROMPT_AR
@@ -36,10 +38,12 @@ class ItCybxAgent:
             model=LLM_MODEL,
             api_key=MISTRAL_API_KEY,
             temperature=0.1,  # Low temperature for factual precision
+            max_retries=6,
+            timeout=30,
         )
 
-        # Registered tools for FAQ RAG and Meeting Booking
-        self.tools = [search_knowledge_base, check_availability, book_meeting]
+        # Registered tools for FAQ RAG, Lead Capture, Escalation, and Booking
+        self.tools = [search_knowledge_base, capture_lead, escalate_to_human, check_availability, book_meeting]
         self.llm_with_tools = self.llm.bind_tools(self.tools)
 
         # Build and compile graph
@@ -49,11 +53,12 @@ class ItCybxAgent:
 
     def _call_model(self, state: AgentState) -> dict:
         """Invokes Mistral LLM with system prompt and message history."""
+        import time
         messages = list(state["messages"])
         language = state.get("language", "en")
 
-        # If the last message is a ToolMessage from check_availability or book_meeting,
-        # return the pre-formatted message directly to guarantee all slots & links are presented.
+        # If the last message is a ToolMessage from action tools,
+        # return the pre-formatted message directly to guarantee exact rendering.
         if messages and isinstance(messages[-1], ToolMessage):
             last_tool = messages[-1]
             tool_name = getattr(last_tool, "name", None)
@@ -67,7 +72,7 @@ class ItCybxAgent:
                     if tool_name:
                         break
 
-            if tool_name in ["check_availability", "book_meeting"]:
+            if tool_name in ["capture_lead", "escalate_to_human", "check_availability", "book_meeting"]:
                 logger.info(f"Directly returning formatted output for tool '{tool_name}'")
                 return {"messages": [AIMessage(content=last_tool.content)]}
 
@@ -81,6 +86,21 @@ class ItCybxAgent:
             # Update system prompt if language changed
             messages[0] = SystemMessage(content=system_prompt)
 
+        # Robust execution with exponential backoff on 429 rate limits
+        for attempt in range(5):
+            try:
+                response = self.llm_with_tools.invoke(messages)
+                return {"messages": [response]}
+            except Exception as e:
+                err_str = str(e).lower()
+                if "429" in err_str or "rate limit" in err_str:
+                    wait_time = (attempt + 1) * 2.5
+                    logger.warning(f"Mistral 429 rate limit hit. Retrying in {wait_time}s (attempt {attempt + 1}/5)...")
+                    time.sleep(wait_time)
+                else:
+                    logger.error(f"Error invoking LLM: {e}")
+                    raise e
+        # Final attempt
         response = self.llm_with_tools.invoke(messages)
         return {"messages": [response]}
 
@@ -116,6 +136,30 @@ class ItCybxAgent:
         # 3. Compile with in-memory checkpointer
         return workflow.compile(checkpointer=self.memory)
 
+    @staticmethod
+    def _clean_closing_filler(text: str) -> str:
+        """Strips out repetitive closing sales pitches, CTAs, and markdown divider dashes."""
+        import re
+        # 1. Strip trailing sales pitch/CTAs (English and Arabic)
+        patterns = [
+            r"(?:\n+|^)(?:[-*—_]{2,}\s*)?\s*(?:Would you like to explore|Let me know if you(?:'re|’re| are) interested|How would you like to proceed|How can I assist you further|Feel free to reach out).*$",
+            r"(?:\n+|^)(?:[-*—_]{2,}\s*)?\s*(?:هل ترغب في استكشاف|أخبرني إذا كنت مهتماً|كيف يمكنني مساعدتك أكثر|هل تود).*$",
+        ]
+        cleaned = text
+        for p in patterns:
+            cleaned = re.sub(p, "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+
+        # 2. Strip standalone horizontal divider lines (e.g. ---, ___, *** on their own line)
+        cleaned = re.sub(r'^[ \t]*(?:-[ \t]*){3,}$', '', cleaned, flags=re.MULTILINE)
+        cleaned = re.sub(r'^[ \t]*(?:_[ \t]*){3,}$', '', cleaned, flags=re.MULTILINE)
+        cleaned = re.sub(r'^[ \t]*(?:\*[ \t]*){3,}$', '', cleaned, flags=re.MULTILINE)
+        cleaned = re.sub(r'^[ \t]*(?:---|\*\*\*|___)(?:[ \t]+(?:---|\*\*\*|___))*[ \t]*$', '', cleaned, flags=re.MULTILINE)
+
+        # 3. Collapse excess consecutive blank lines
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+
+        return cleaned.strip()
+
     def chat(self, user_message: str, thread_id: str = "default_session", language: str = "auto") -> str:
         """
         Processes a user turn and returns the final assistant response string.
@@ -138,7 +182,8 @@ class ItCybxAgent:
         output = self.graph.invoke(inputs, config=config)
         
         last_msg = output["messages"][-1]
-        return last_msg.content
+        raw_content = last_msg.content
+        return self._clean_closing_filler(raw_content) if isinstance(raw_content, str) else raw_content
 
 
 # Reusable singleton instance
