@@ -1,5 +1,6 @@
 # src/knowledge_base/chunker.py
 
+import re
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import List, Dict, Any
@@ -9,6 +10,18 @@ from src.config.settings import PROCESSED_EN_DIR, PROCESSED_AR_DIR
 from src.utils.logger import get_logger
 
 logger = get_logger("Chunker")
+
+# Matches unfinished template placeholders like "[e.g. 14 / 30]", "[email]",
+# "[city, Pakistan]", or "[الهاتف/واتساب]" that are still sitting in the
+# source policy documents. Any chunk containing one of these is excluded
+# from the knowledge base entirely (see parse_file below) so the bot can
+# never surface literal placeholder text to a customer as if it were a
+# real answer, e.g. quoting "[e.g. 14 / 30] days" as an actual notice
+# period. This is a safety net, not a substitute for the business owner
+# filling in the real values — excluded content just means the bot will
+# say it doesn't have that specific detail instead of making something up
+# or repeating the placeholder verbatim.
+_PLACEHOLDER_RE = re.compile(r"\[[^\[\]]{2,60}\]")
 
 
 @dataclass
@@ -86,9 +99,20 @@ class DocumentChunker:
         total_chunks = len(raw_chunks)
 
         text_chunks: List[TextChunk] = []
+        excluded_count = 0
         for idx, text in enumerate(raw_chunks):
             cleaned_chunk_text = text.strip()
             if not cleaned_chunk_text:
+                continue
+
+            placeholder_match = _PLACEHOLDER_RE.search(cleaned_chunk_text)
+            if placeholder_match:
+                excluded_count += 1
+                logger.warning(
+                    f"[{language.upper()}] Excluding chunk {idx} of '{slug}.txt' from the knowledge "
+                    f"base: contains an unfilled placeholder {placeholder_match.group(0)!r}. "
+                    f"This content needs a real, approved value before it can be published."
+                )
                 continue
 
             chunk_id = f"{language}_{slug}_{idx}"
@@ -104,6 +128,11 @@ class DocumentChunker:
                 )
             )
 
+        if excluded_count:
+            logger.warning(
+                f"[{language.upper()}] '{slug}.txt': excluded {excluded_count} chunk(s) with "
+                f"unfilled placeholders — those facts are NOT in the knowledge base until fixed."
+            )
         logger.info(f"[{language.upper()}] Chunked '{slug}.txt' -> {len(text_chunks)} chunks")
         return text_chunks
 
