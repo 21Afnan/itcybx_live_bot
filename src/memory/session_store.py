@@ -39,7 +39,14 @@ class SessionStore:
                 logger.warning(f"Could not connect to Redis ({e}). Falling back to in-memory session store.")
                 self.redis_client = None
         else:
-            logger.info("No REDIS_URL configured. Using local in-memory session store.")
+            logger.warning(
+                "No REDIS_URL configured. Using local in-memory session store backed by "
+                f"{SESSIONS_BACKUP_FILE}. This is fine for a single process (e.g. `uvicorn` "
+                "with no --workers flag), but is NOT safe if you ever run multiple worker "
+                "processes: each one loads and rewrites the whole file independently, so "
+                "concurrent processes will silently overwrite each other's saved sessions. "
+                "Set REDIS_URL before scaling beyond a single worker."
+            )
 
         # Load existing local sessions if memory fallback is used
         if not self.redis_client:
