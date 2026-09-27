@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
-from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Request, BackgroundTasks, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, FileResponse
@@ -20,14 +20,12 @@ if str(BASE_DIR) not in sys.path:
 
 from src.agent.graph import get_agent
 from src.memory.session_store import get_session_store
-from src.tools.lead_tool import load_all_leads, capture_lead
-from src.tools.escalation_tool import load_all_escalations, escalate_to_human
 from src.config.settings import (
     LLM_MODEL,
     EMBEDDING_MODEL,
     PINECONE_INDEX_NAME,
-    SLACK_WEBHOOK_URL,
     REDIS_URL,
+    ADMIN_API_KEY,
 )
 from src.utils.logger import get_logger
 
@@ -46,7 +44,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Permits embedding on any WordPress domain or local dev
-    allow_credentials=True,
+    allow_credentials=False,  # Must be False with a wildcard origin (browsers reject "*" + credentials); the widget uses no cookies/auth headers
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -75,23 +73,20 @@ class ChatResponse(BaseModel):
     status: str = "success"
 
 
-class LeadRequest(BaseModel):
-    name: str = Field(..., min_length=2)
-    email: str = Field(..., min_length=5)
-    phone: Optional[str] = ""
-    store_url_or_name: Optional[str] = ""
-    platform: Optional[str] = ""
-    service_interest: Optional[str] = ""
-    notes: Optional[str] = ""
-    language: Optional[str] = "en"
-
-
-class EscalationRequest(BaseModel):
-    reason: str = Field(..., min_length=3)
-    user_contact: Optional[str] = ""
-    urgency: Optional[str] = "HIGH"
-    summary: Optional[str] = ""
-    language: Optional[str] = "en"
+def require_admin_key(x_admin_api_key: Optional[str] = Header(None)):
+    """
+    Guards read/delete access to session transcripts. Fails CLOSED: if
+    ADMIN_API_KEY isn't configured on the server, these endpoints are
+    refused entirely rather than left open, since chat transcripts can
+    contain visitor PII.
+    """
+    if not ADMIN_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="This endpoint is disabled until ADMIN_API_KEY is configured on the server.",
+        )
+    if not x_admin_api_key or x_admin_api_key != ADMIN_API_KEY:
+        raise HTTPException(status_code=401, detail="Missing or invalid X-Admin-Api-Key header.")
 
 
 # =====================================================================
@@ -124,7 +119,6 @@ async def health_check():
             "embedding_model": EMBEDDING_MODEL,
             "pinecone_index": PINECONE_INDEX_NAME,
             "redis_connected": session_store.redis_client is not None,
-            "slack_configured": bool(SLACK_WEBHOOK_URL),
             "timestamp": time.time(),
         }
     except Exception as e:
@@ -148,21 +142,29 @@ async def handle_chat(payload: ChatRequest):
         agent = get_agent()
         session_store = get_session_store()
 
-        # 1. Save user turn to session history
+        # 1. Load prior turns (Redis-backed, or local-file fallback) BEFORE
+        #    appending this turn, so it can be replayed as conversation context.
+        #    This is what makes multi-turn memory survive server restarts and
+        #    work consistently across multiple worker processes, instead of
+        #    relying solely on LangGraph's in-process, per-worker MemorySaver.
+        prior_history = session_store.get_history(session_id)
+
+        # 2. Save user turn to session history
         session_store.save_turn(session_id, role="user", content=user_msg, language=req_lang)
 
-        # 2. Invoke LangGraph agent
+        # 3. Invoke LangGraph agent with the durable history as context
         bot_response = agent.chat(
             user_message=user_msg,
             thread_id=session_id,
             language=req_lang,
+            history=prior_history,
         )
 
-        # 3. Detect language returned for response metadata
+        # 4. Detect language returned for response metadata
         has_arabic = any('\u0600' <= char <= '\u06FF' or '\u0750' <= char <= '\u077F' for char in bot_response)
         detected_lang = "ar" if has_arabic else "en"
 
-        # 4. Save assistant response to session history
+        # 5. Save assistant response to session history
         session_store.save_turn(session_id, role="assistant", content=bot_response, language=detected_lang)
 
         return ChatResponse(
@@ -190,7 +192,7 @@ async def handle_chat(payload: ChatRequest):
         )
 
 
-@app.get("/api/session/{session_id}", tags=["Chat"])
+@app.get("/api/session/{session_id}", tags=["Chat"], dependencies=[Depends(require_admin_key)])
 async def get_session_history(session_id: str):
     """Retrieves conversation history for a given session."""
     session_store = get_session_store()
@@ -202,7 +204,7 @@ async def get_session_history(session_id: str):
     }
 
 
-@app.delete("/api/session/{session_id}", tags=["Chat"])
+@app.delete("/api/session/{session_id}", tags=["Chat"], dependencies=[Depends(require_admin_key)])
 async def delete_session(session_id: str):
     """Resets conversation memory for a given session."""
     session_store = get_session_store()
@@ -211,65 +213,6 @@ async def delete_session(session_id: str):
         "session_id": session_id,
         "cleared": cleared,
         "message": "Session conversation history cleared.",
-    }
-
-
-# =====================================================================
-# LEADS & ESCALATIONS ENDPOINTS
-# =====================================================================
-
-@app.get("/api/leads", tags=["Leads"])
-async def list_leads():
-    """Returns list of all captured leads."""
-    leads = load_all_leads()
-    return {
-        "total_leads": len(leads),
-        "leads": leads,
-    }
-
-
-@app.post("/api/leads", tags=["Leads"])
-async def submit_lead(payload: LeadRequest):
-    """Direct lead submission endpoint for web forms or chat widget forms."""
-    result = capture_lead.invoke({
-        "name": payload.name,
-        "email": payload.email,
-        "phone": payload.phone or "",
-        "store_url_or_name": payload.store_url_or_name or "",
-        "platform": payload.platform or "",
-        "service_interest": payload.service_interest or "",
-        "notes": payload.notes or "",
-        "language": payload.language or "en",
-    })
-    return {
-        "status": "success",
-        "confirmation": result,
-    }
-
-
-@app.get("/api/escalations", tags=["Escalations"])
-async def list_escalations():
-    """Returns list of all logged human escalations."""
-    escalations = load_all_escalations()
-    return {
-        "total_escalations": len(escalations),
-        "escalations": escalations,
-    }
-
-
-@app.post("/api/escalate", tags=["Escalations"])
-async def submit_escalation(payload: EscalationRequest):
-    """Direct escalation endpoint for web visitors requesting human contact."""
-    result = escalate_to_human.invoke({
-        "reason": payload.reason,
-        "user_contact": payload.user_contact or "",
-        "urgency": payload.urgency or "HIGH",
-        "summary": payload.summary or "",
-        "language": payload.language or "en",
-    })
-    return {
-        "status": "success",
-        "confirmation": result,
     }
 
 

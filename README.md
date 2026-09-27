@@ -35,34 +35,33 @@ A production-grade, bilingual (English/Arabic) AI conversational agent, REST API
                     ┌────────────────────────────────────────────────────────┐
                     │            LangGraph Agent (src/agent/graph.py)        │
                     │   • Mistral Conversational Engine                      │
-                    │   • Multi-Turn State Management (MemorySaver)          │
+                    │   • Multi-Turn State Management (MemorySaver +         │
+                    │     durable SessionStore replay across restarts)       │
                     │   • Exponential Backoff & Rate Limit Resilience        │
                     └──────────────────────────┬─────────────────────────────┘
                                                │
-                              Tool Invocation / Decision Loop
+                                    Tool Invocation / Decision
                                                │
-        ┌──────────────────────────────┬───────┴──────────────────────┬──────────────────────────────┐
-        ▼                              ▼                              ▼                              ▼
-┌────────────────────────────┐ ┌────────────────────────────┐ ┌────────────────────────────┐ ┌────────────────────────────┐
-│   search_knowledge_base    │ │        capture_lead        │ │      escalate_to_human     │ │   check_avail / book_meet  │
-│  (src/tools/faq_tool.py)   │ │  (src/tools/lead_tool.py)  │ │(src/tools/escalation_tool) │ │ (src/tools/booking_tool)   │
-└─────────────┬──────────────┘ └─────────────┬──────────────┘ └─────────────┬──────────────┘ └─────────────┬──────────────┘
-              │                              │                              │                              │
-              ▼                              ▼                              ▼                              ▼
-┌────────────────────────────┐ ┌────────────────────────────┐ ┌────────────────────────────┐ ┌────────────────────────────┐
-│   Pinecone Vector Store    │ │  Leads Store + Webhooks    │ │ Slack Alerts + Escalations │ │  Calendly API + Bookings   │
-│  • kb_en (English index)   │ │  • data/leads.json         │ │  • data/escalations.json   │ │  • data/bookings.json      │
-│  • kb_ar (Arabic index)    │ │  • Optional Slack Alert    │ │  • Instant Slack Webhook   │ │  • Sun-Thu 12:15-17:00     │
-└────────────────────────────┘ └────────────────────────────┘ └────────────────────────────┘ └────────────────────────────┘
+                                               ▼
+                    ┌────────────────────────────────────────────────────────┐
+                    │          search_knowledge_base (src/tools/faq_tool.py) │
+                    └──────────────────────────┬─────────────────────────────┘
+                                               │
+                                               ▼
+                    ┌────────────────────────────────────────────────────────┐
+                    │               Pinecone Vector Store                    │
+                    │   • kb_en (English index) • kb_ar (Arabic index)       │
+                    └────────────────────────────────────────────────────────┘
 ```
+
+This is a single-purpose FAQ chatbot: it answers questions from the bilingual knowledge base and nothing else. There is no lead capture, human escalation, or meeting booking — visitors who need any of that are pointed to the official contact email/phone by the system prompt.
 
 ---
 
 ## 🌟 Key Features & Capabilities
 
 * **Zero-Hallucination RAG Pipeline:** Answers questions using verified content from the live website. If similarity score is below confidence threshold ($0.65$), the bot safely returns the official contact fallback (`info@itcybx.co.uk`, `+44 793 389 5500`).
-* **Instant Lead Capture (`capture_lead`):** Automatically gathers client name, email, phone/WhatsApp, store URL, platform (Shopify/Salla/Zid), and interest into structured storage (`data/leads.json`) and alerts the team via Slack.
-* **Direct Human Escalation (`escalate_to_human`):** Triggers urgent human notifications when a visitor requests direct phone contact, custom enterprise pricing, or immediate manager assistance.
+* **Durable Multi-Turn Memory:** Conversation history is persisted via `SessionStore` (Redis, or a local JSON fallback) and replayed into the agent on every turn, so context survives server restarts and works across multiple worker processes — not just an in-process cache.
 * **Bilingual Auto-Detection (EN / AR):** Automatically identifies English or Arabic input and routes to the appropriate knowledge namespace (`kb_en` or `kb_ar`), localized prompts, and RTL/LTR formatting.
 * **FastAPI Production Server:** High-performance async REST backend with full CORS support, health checking, session history inspection, and static asset distribution.
 * **Embeddable Glassmorphic Web Widget:** Standalone JavaScript widget (`frontend/widget.js` + `frontend/widget.css`) ready to drop into WordPress with quick reply chips, message formatting, typing indicators, and session persistence.
@@ -85,10 +84,7 @@ itcybx_live_bot/
 │   ├── processed/                         # Cleaned, boilerplate-free text
 │   │   ├── en/                            # 16 vetted English documents
 │   │   └── ar/                            # 15 vetted Arabic documents
-│   ├── leads.json                         # Captured client inquiries & lead records
-│   ├── escalations.json                   # Human support tickets & escalation alerts
-│   ├── bookings.json                      # Confirmed meeting bookings
-│   └── sessions_backup.json               # Persistent conversation memory backup
+│   └── sessions_backup.json               # Persistent conversation memory backup (local fallback store)
 │
 ├── src/                                   # Application Source Code
 │   ├── config/
@@ -105,10 +101,7 @@ itcybx_live_bot/
 │   ├── memory/
 │   │   └── session_store.py               # Redis & in-memory multi-turn session persistence
 │   ├── tools/
-│   │   ├── faq_tool.py                    # search_knowledge_base (RAG retrieval)
-│   │   ├── lead_tool.py                   # capture_lead (visitor details & Slack alert)
-│   │   ├── escalation_tool.py             # escalate_to_human (urgent human support alert)
-│   │   └── booking_tool.py                # check_availability & book_meeting (Calendly)
+│   │   └── faq_tool.py                    # search_knowledge_base (RAG retrieval) — the only tool
 │   ├── agent/
 │   │   ├── prompts_en.py                  # English system prompt & guardrails
 │   │   ├── prompts_ar.py                  # Arabic system prompt & guardrails
@@ -124,8 +117,6 @@ itcybx_live_bot/
 ├── scripts/                               # CLI Tools & Automated Test Suites
 │   ├── build_knowledge_base.py            # Chunks, embeds, and indexes Pinecone
 │   ├── test_rag.py                        # Automated RAG accuracy benchmarks
-│   ├── test_lead_and_escalation.py        # Lead capture & escalation tool test suite
-│   ├── test_booking.py                    # Meeting booking test suite
 │   ├── test_api.py                        # FastAPI REST endpoint test suite
 │   └── chat_cli.py                        # Interactive live terminal chat CLI
 │
@@ -153,16 +144,13 @@ itcybx_live_bot/
 * **`prompts_en.py` & `prompts_ar.py`:** System prompts enforcing zero fluff, strict tool execution, direct answers, and official fallback contact details (`info@itcybx.co.uk`, `+44 793 389 5500`).
 
 ### 4. Tool Suite (`src/tools/`)
-* **`faq_tool.py` (`search_knowledge_base`):** Queries Pinecone with confidence thresholds. If confidence is low or out-of-domain, safely instructs the agent to return the fallback response without guessing.
-* **`lead_tool.py` (`capture_lead`):** Records prospective client inquiries, store platform, budget, and requirements into `data/leads.json` and optionally triggers a Slack alert.
-* **`escalation_tool.py` (`escalate_to_human`):** Generates support tickets (`ESC-XXXXXX`), logs them to `data/escalations.json`, and triggers an immediate Slack notification.
-* **`booking_tool.py` (`check_availability` & `book_meeting`):** Handles Calendly meeting integration for growth audit calls (Sunday to Thursday, 12:15 PM to 5:00 PM).
+* **`faq_tool.py` (`search_knowledge_base`):** The agent's only tool. Queries Pinecone with confidence thresholds. If confidence is low or out-of-domain, safely instructs the agent to return the fallback response without guessing.
 
 ### 5. Memory & Session Persistence (`src/memory/`)
 * **`session_store.py`:** Multi-turn session manager. Connects to Redis when `REDIS_URL` is set, or automatically falls back to an in-memory dictionary backed by `data/sessions_backup.json`.
 
 ### 6. Backend API & Web Widget (`src/api/` & `frontend/`)
-* **`main.py`:** Async FastAPI application with endpoints for chat turns, session history, lead submissions, escalation logs, and health status.
+* **`main.py`:** Async FastAPI application with endpoints for chat turns, admin-key-gated session history/deletion, and health status.
 * **`widget.js` & `widget.css`:** Zero-dependency, lightweight chat widget ready to be embedded on any WordPress website with auto RTL/LTR switching and local session persistence.
 
 ---
@@ -198,9 +186,11 @@ PINECONE_INDEX_NAME=itcybx-kb
 # Optional Settings
 LLM_MODEL=mistral-small-latest
 USER_AGENT=itcybx-live-bot/1.0
-SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
 REDIS_URL=redis://localhost:6379/0
-CALENDLY_API_KEY=
+
+# Required to use the admin-only session endpoints (GET/DELETE /api/session/{id})
+# Those endpoints return 503 until this is set.
+ADMIN_API_KEY=
 ```
 
 Verify your configuration:
@@ -219,8 +209,6 @@ python -m src.config.settings
 | `python -m src.loaders.content_cleaner` | Strips navigation, headers, and footer boilerplate. |
 | `python -m scripts.build_knowledge_base` | Chunks, embeds, and indexes all documents into Pinecone. |
 | `python -m scripts.test_rag` | Runs automated RAG benchmark tests across EN, AR, and Out-of-Domain. |
-| `python -m scripts.test_lead_and_escalation` | Tests lead capture and human escalation tools (EN & AR). |
-| `python -m scripts.test_booking` | Tests Calendly meeting booking and schedule enforcement. |
 | `python -m scripts.test_api` | Tests all FastAPI REST endpoints using TestClient. |
 | `python -m scripts.chat_cli` | **Launches the interactive live terminal chatbot.** |
 | `python -m uvicorn src.api.main:app --reload` | **Starts the live FastAPI backend server on port 8000.** |
@@ -247,7 +235,7 @@ To embed the live chat widget into WordPress or any website, add this single scr
    ```
    http://localhost:8000/demo
    ```
-3. Test English and Arabic chat flows, quick action chips, lead submissions, and responsive view.
+3. Test English and Arabic chat flows, quick action chips, and responsive view.
 
 ---
 
@@ -256,8 +244,6 @@ To embed the live chat widget into WordPress or any website, add this single scr
 - [x] **Phase 1:** Sitemap Loading, Scraping & Content Sanitization
 - [x] **Phase 2:** Bilingual Knowledge Base (RAG), Mistral Embeddings & Pinecone Indexing
 - [x] **Phase 3:** LangGraph State Machine Agent & Bilingual Prompt Guardrails
-- [x] **Phase 4:** Meeting Booking & Schedule Enforcement (Sunday–Thursday 12:15–17:00)
-- [x] **Phase 5:** Lead Capture Tool & Slack Escalation Webhooks
 - [x] **Phase 6:** End-to-End Bilingual Runtime & Arabic Auto-Detection
 - [x] **Phase 7:** FastAPI Async REST Backend & Redis Session Memory Store
 - [x] **Phase 8:** Embeddable Glassmorphic Web Widget (HTML/CSS/JS with RTL/LTR)

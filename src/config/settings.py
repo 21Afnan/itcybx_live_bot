@@ -48,20 +48,13 @@ MISTRAL_API_KEY = get_env("MISTRAL_API_KEY", required=True)
 PINECONE_API_KEY = get_env("PINECONE_API_KEY", required=True)
 PINECONE_INDEX_NAME = get_env("PINECONE_INDEX_NAME", required=True)
 
-# Optional Integrations (Slack, Redis, Calendly, Database)
-SLACK_WEBHOOK_URL = get_env("SLACK_WEBHOOK_URL", required=False, default="")
+# Optional Integrations (Redis for session memory)
 REDIS_URL = get_env("REDIS_URL", required=False, default="")
-DATABASE_URL = get_env("DATABASE_URL", required=False, default="")
-CALENDLY_API_KEY = get_env("CALENDLY_API_KEY", required=False, default="")
-CALENDLY_EVENT_TYPE_URI = get_env("CALENDLY_EVENT_TYPE_URI", required=False, default="")
-CALENDLY_TIMEZONE = get_env("CALENDLY_TIMEZONE", required=False, default="Europe/London")
 
-# Business Hours & Scheduling Constants
-WORKING_DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday"]
-MEETING_START_HOUR = 12
-MEETING_END_HOUR = 17
-MEETING_DURATION_MINUTES = 30
-TIMEZONE_LABEL = "BST / GMT"
+# Admin key required to read/delete session transcripts via the API. Left
+# unset by default so those endpoints stay LOCKED (fail-closed) until an
+# operator explicitly configures it.
+ADMIN_API_KEY = get_env("ADMIN_API_KEY", required=False, default="")
 
 # =====================================================================
 # 4. MISTRAL & VECTOR CONFIGURATION
@@ -84,11 +77,6 @@ RAW_AR_DIR = RAW_DATA_DIR / "ar"
 PROCESSED_EN_DIR = PROCESSED_DATA_DIR / "en"
 PROCESSED_AR_DIR = PROCESSED_DATA_DIR / "ar"
 
-# Storage Files
-LEADS_FILE = DATA_DIR / "leads.json"
-ESCALATIONS_FILE = DATA_DIR / "escalations.json"
-BOOKINGS_FILE = DATA_DIR / "bookings.json"
-
 
 if __name__ == "__main__":
     print("\n=======================================================")
@@ -98,12 +86,10 @@ if __name__ == "__main__":
     print(f"Mistral API Key      : {'LOADED (OK)' if MISTRAL_API_KEY else 'MISSING!'}")
     print(f"Pinecone API Key     : {'LOADED (OK)' if PINECONE_API_KEY else 'MISSING!'}")
     print(f"Pinecone Index Name  : {PINECONE_INDEX_NAME}")
-    print(f"Slack Webhook        : {'CONFIGURED' if SLACK_WEBHOOK_URL else 'NOT SET (Fallback to local logs)'}")
     print(f"Redis URL            : {'CONFIGURED' if REDIS_URL else 'NOT SET (In-memory session store)'}")
     print(f"Embedding Model      : {EMBEDDING_MODEL} (Dim: {EMBEDDING_DIMENSION})")
     print(f"LLM Model            : {LLM_MODEL}")
     print(f"Processed Data Dir   : {PROCESSED_DATA_DIR}")
-    print(f"Leads File           : {LEADS_FILE}")
     print("=======================================================\n")
     logger.info("All essential environment settings loaded and verified successfully.")
 

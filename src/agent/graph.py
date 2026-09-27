@@ -1,7 +1,8 @@
 # src/agent/graph.py
 
-from typing import TypedDict, Annotated, Sequence, Literal
-from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage, ToolMessage
+import uuid
+from typing import TypedDict, Annotated, Sequence, Literal, Optional, List, Dict
+from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage
 from langchain_mistralai import ChatMistralAI
 from langgraph.graph import StateGraph, END, START
 from langgraph.graph.message import add_messages
@@ -10,9 +11,6 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from src.config.settings import MISTRAL_API_KEY, LLM_MODEL
 from src.tools.faq_tool import search_knowledge_base
-from src.tools.lead_tool import capture_lead
-from src.tools.escalation_tool import escalate_to_human
-from src.tools.booking_tool import check_availability, book_meeting
 from src.agent.prompts_en import SYSTEM_PROMPT_EN
 from src.agent.prompts_ar import SYSTEM_PROMPT_AR
 from src.utils.logger import get_logger
@@ -42,8 +40,8 @@ class ItCybxAgent:
             timeout=30,
         )
 
-        # Registered tools for FAQ RAG, Lead Capture, Escalation, and Booking
-        self.tools = [search_knowledge_base, capture_lead, escalate_to_human, check_availability, book_meeting]
+        # Single registered tool: FAQ knowledge-base search
+        self.tools = [search_knowledge_base]
         self.llm_with_tools = self.llm.bind_tools(self.tools)
 
         # Build and compile graph
@@ -56,25 +54,6 @@ class ItCybxAgent:
         import time
         messages = list(state["messages"])
         language = state.get("language", "en")
-
-        # If the last message is a ToolMessage from action tools,
-        # return the pre-formatted message directly to guarantee exact rendering.
-        if messages and isinstance(messages[-1], ToolMessage):
-            last_tool = messages[-1]
-            tool_name = getattr(last_tool, "name", None)
-            if not tool_name and last_tool.tool_call_id:
-                for msg in reversed(messages[:-1]):
-                    if hasattr(msg, "tool_calls") and msg.tool_calls:
-                        for tc in msg.tool_calls:
-                            if tc.get("id") == last_tool.tool_call_id:
-                                tool_name = tc.get("name")
-                                break
-                    if tool_name:
-                        break
-
-            if tool_name in ["capture_lead", "escalate_to_human", "check_availability", "book_meeting"]:
-                logger.info(f"Directly returning formatted output for tool '{tool_name}'")
-                return {"messages": [AIMessage(content=last_tool.content)]}
 
         # Select matching system prompt
         system_prompt = SYSTEM_PROMPT_AR if language == "ar" else SYSTEM_PROMPT_EN
@@ -160,10 +139,26 @@ class ItCybxAgent:
 
         return cleaned.strip()
 
-    def chat(self, user_message: str, thread_id: str = "default_session", language: str = "auto") -> str:
+    def chat(
+        self,
+        user_message: str,
+        thread_id: str = "default_session",
+        language: str = "auto",
+        history: Optional[List[Dict[str, str]]] = None,
+    ) -> str:
         """
         Processes a user turn and returns the final assistant response string.
         Automatically detects Arabic script if language is 'auto'.
+
+        If `history` is provided (e.g. loaded from the durable SessionStore),
+        the full conversation is rebuilt from it and replayed under a fresh,
+        call-scoped checkpointer thread. This makes the caller's persisted
+        history the source of truth for multi-turn context, instead of relying
+        on LangGraph's in-process MemorySaver \u2014 which only lives for the
+        lifetime of a single process and does not survive restarts or get
+        shared across multiple worker processes. When `history` is omitted
+        (e.g. the CLI), behavior falls back to the previous thread-based
+        in-process memory.
         """
         # Auto-detect language if requested or if Arabic characters exist
         if language == "auto":
@@ -172,11 +167,30 @@ class ItCybxAgent:
         else:
             detected_lang = language.lower()
 
-        config = {"configurable": {"thread_id": thread_id}}
-        inputs = {
-            "messages": [HumanMessage(content=user_message)],
-            "language": detected_lang,
-        }
+        if history:
+            messages: List[BaseMessage] = []
+            for turn in history:
+                role = turn.get("role")
+                content = turn.get("content", "")
+                if not content:
+                    continue
+                if role == "user":
+                    messages.append(HumanMessage(content=content))
+                elif role == "assistant":
+                    messages.append(AIMessage(content=content))
+            messages.append(HumanMessage(content=user_message))
+            inputs = {"messages": messages, "language": detected_lang}
+            # Call-scoped thread id so the in-process checkpointer never
+            # accumulates duplicate state across turns for the same session.
+            graph_thread_id = f"{thread_id}:{uuid.uuid4().hex[:8]}"
+        else:
+            inputs = {
+                "messages": [HumanMessage(content=user_message)],
+                "language": detected_lang,
+            }
+            graph_thread_id = thread_id
+
+        config = {"configurable": {"thread_id": graph_thread_id}}
 
         logger.info(f"Processing chat turn for thread '{thread_id}' [lang={detected_lang}]: '{user_message}'")
         output = self.graph.invoke(inputs, config=config)
