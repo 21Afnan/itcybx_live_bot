@@ -9,6 +9,22 @@ from src.utils.logger import get_logger
 logger = get_logger("BuildKB")
 
 
+def _verify_namespace_count(vector_store: PineconeVectorStore, namespace: str, expected: int):
+    """Confirms the namespace actually holds the expected number of vectors
+    after an upsert, rather than silently trusting that upsert succeeded."""
+    time.sleep(2)  # Pinecone stats can lag briefly after a write
+    stats = vector_store.get_index_stats()
+    actual = stats.get("namespaces", {}).get(namespace, {}).get("vector_count", 0)
+    if actual != expected:
+        error_msg = (
+            f"Namespace '{namespace}' has {actual} vectors after upsert, "
+            f"expected {expected}. The rebuild may be incomplete."
+        )
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
+    logger.info(f"Verified namespace '{namespace}': {actual}/{expected} vectors present.")
+
+
 def build_knowledge_base():
     """
     Main ingestion pipeline:
@@ -34,21 +50,28 @@ def build_knowledge_base():
 
     logger.info(f"Loaded {len(en_chunks)} English chunks and {len(ar_chunks)} Arabic chunks.")
 
-    # 3. Process English Chunks
-    if en_chunks:
-        logger.info("\n--- [Step 2/3] Embedding & Indexing English (kb_en) ---")
-        vector_store.clear_namespace("kb_en")
-        en_texts = [c.text for c in en_chunks]
-        en_vectors = embedder.embed_documents(en_texts, batch_size=32)
-        vector_store.upsert_chunks(en_chunks, en_vectors, namespace="kb_en", batch_size=50)
+    # 3. Generate embeddings for BOTH languages FIRST, before touching the
+    #    live namespaces. If Mistral's embedding API fails partway (network
+    #    error, rate limit, etc.), the live kb_en/kb_ar data is untouched and
+    #    the bot keeps serving the previous, still-valid knowledge base. Only
+    #    once embeddings for a language are fully computed do we clear and
+    #    replace that namespace.
+    logger.info("\n--- [Step 2/3] Generating Embeddings (before touching live data) ---")
+    en_texts = [c.text for c in en_chunks]
+    ar_texts = [c.text for c in ar_chunks]
+    en_vectors = embedder.embed_documents(en_texts, batch_size=32) if en_chunks else []
+    ar_vectors = embedder.embed_documents(ar_texts, batch_size=32) if ar_chunks else []
 
-    # 4. Process Arabic Chunks
+    logger.info("\n--- [Step 3/3] Replacing Live Namespaces ---")
+    if en_chunks:
+        vector_store.clear_namespace("kb_en")
+        vector_store.upsert_chunks(en_chunks, en_vectors, namespace="kb_en", batch_size=50)
+        _verify_namespace_count(vector_store, "kb_en", expected=len(en_chunks))
+
     if ar_chunks:
-        logger.info("\n--- [Step 3/3] Embedding & Indexing Arabic (kb_ar) ---")
         vector_store.clear_namespace("kb_ar")
-        ar_texts = [c.text for c in ar_chunks]
-        ar_vectors = embedder.embed_documents(ar_texts, batch_size=32)
         vector_store.upsert_chunks(ar_chunks, ar_vectors, namespace="kb_ar", batch_size=50)
+        _verify_namespace_count(vector_store, "kb_ar", expected=len(ar_chunks))
 
     # 5. Fetch updated stats
     time.sleep(2)  # Allow Pinecone stats to refresh

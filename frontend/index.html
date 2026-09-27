@@ -653,7 +653,10 @@
 
   <script>
     let currentLang = "en";
-    let sessionId = "session_" + Math.random().toString(36).substring(2, 12);
+    // Session id is issued by the server (cryptographically random) on the
+    // first response, not generated here — see the /api/chat response
+    // handling below, which adopts and persists whatever id the server sends.
+    let sessionId = null;
     let isWaiting = false;
 
     const I18N = {
@@ -695,6 +698,15 @@
       }
     };
 
+    // Sets textContent only if the element currently exists. The hero
+    // welcome block (and its children, incl. #cards-grid) is removed from
+    // the DOM once the first real message is sent (see appendMessage), so
+    // a language switch after that point must not assume it's still there.
+    function setTextIfPresent(id, value) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = value;
+    }
+
     function setLanguage(lang) {
       currentLang = lang;
       const isAr = lang === "ar";
@@ -714,39 +726,55 @@
         document.getElementById("btn-lang-ar").classList.remove("active");
       }
 
-      // Update UI Strings
+      // Update UI Strings (always-present chrome)
       const t = I18N[currentLang];
-      document.getElementById("txt-new-chat").textContent = t.newChat;
-      document.getElementById("txt-language-title").textContent = t.langTitle;
-      document.getElementById("txt-capabilities-title").textContent = t.capTitle;
-      document.getElementById("txt-header-title").textContent = t.headerTitle;
-      document.getElementById("txt-header-status").textContent = t.headerStatus;
-      document.getElementById("txt-header-clear").textContent = t.clear;
-      document.getElementById("txt-hero-title").textContent = t.heroTitle;
-      document.getElementById("txt-hero-desc").textContent = t.heroDesc;
+      setTextIfPresent("txt-new-chat", t.newChat);
+      setTextIfPresent("txt-language-title", t.langTitle);
+      setTextIfPresent("txt-capabilities-title", t.capTitle);
+      setTextIfPresent("txt-header-title", t.headerTitle);
+      setTextIfPresent("txt-header-status", t.headerStatus);
+      setTextIfPresent("txt-header-clear", t.clear);
       document.getElementById("chat-input").placeholder = t.placeholder;
-      document.getElementById("txt-footer-note").textContent = t.footerNote;
+      setTextIfPresent("txt-footer-note", t.footerNote);
 
-      // Render Prompt Cards
+      // Hero welcome block only exists before the first real message
+      setTextIfPresent("txt-hero-title", t.heroTitle);
+      setTextIfPresent("txt-hero-desc", t.heroDesc);
+
+      // Render Prompt Cards (only if the hero block is present)
       const grid = document.getElementById("cards-grid");
-      grid.innerHTML = "";
-      t.cards.forEach(c => {
-        const card = document.createElement("div");
-        card.className = "prompt-card";
-        card.onclick = () => sendQuickPrompt(c.prompt);
-        card.innerHTML = `<h4>${c.title}</h4><p>${c.desc}</p>`;
-        grid.appendChild(card);
-      });
+      if (grid) {
+        grid.innerHTML = "";
+        t.cards.forEach(c => {
+          const card = document.createElement("div");
+          card.className = "prompt-card";
+          card.onclick = () => sendQuickPrompt(c.prompt);
+          card.innerHTML = `<h4>${c.title}</h4><p>${c.desc}</p>`;
+          grid.appendChild(card);
+        });
+      }
     }
 
     function resetChat() {
-      sessionId = "session_" + Math.random().toString(36).substring(2, 12);
+      // Drop the current session id; the next message gets a fresh,
+      // server-issued one (see the /api/chat call below).
+      sessionId = null;
       const stream = document.getElementById("messages-stream");
       stream.innerHTML = "";
-      
+
+      // Rebuild the full hero skeleton (badge, title, description, and an
+      // empty cards grid) so setLanguage() below has real elements to fill
+      // in — previously this created an empty div with none of the expected
+      // child ids, which made setLanguage() throw on the very next line.
       const welcome = document.createElement("div");
       welcome.className = "hero-welcome";
       welcome.id = "hero-welcome";
+      welcome.innerHTML = `
+        <div class="hero-badge">🤖 Bilingual E-Commerce Growth Agent</div>
+        <h1 id="txt-hero-title"></h1>
+        <p id="txt-hero-desc"></p>
+        <div class="cards-grid" id="cards-grid"></div>
+      `;
       stream.appendChild(welcome);
       setLanguage(currentLang);
     }
@@ -864,6 +892,10 @@
         }
 
         const data = await response.json();
+        // Adopt the server-issued session id (first turn, or after reset).
+        if (data.session_id) {
+          sessionId = data.session_id;
+        }
         appendMessage("bot", data.response || "No response received.");
       } catch (err) {
         removeTypingIndicator();

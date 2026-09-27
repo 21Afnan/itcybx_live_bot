@@ -76,7 +76,15 @@ class PineconeVectorStore:
             self.index.delete(delete_all=True, namespace=namespace)
             logger.info(f"Cleared namespace '{namespace}' successfully.")
         except Exception as e:
-            logger.warning(f"Namespace '{namespace}' might already be empty or clean: {e}")
+            # A namespace that doesn't exist yet (first-ever build) is
+            # expected and benign. Any other failure (auth, network, quota)
+            # must NOT be silently swallowed — the caller would otherwise
+            # proceed to upsert into a namespace it thinks is now empty.
+            if "not found" in str(e).lower() or "404" in str(e):
+                logger.info(f"Namespace '{namespace}' does not exist yet (nothing to clear).")
+            else:
+                logger.error(f"Failed to clear namespace '{namespace}': {e}")
+                raise
 
     def upsert_chunks(
         self,

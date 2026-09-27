@@ -34,8 +34,12 @@
   }
 
   let currentLang = detectInitialLang();
-  let sessionId = localStorage.getItem(STORAGE_KEY) || "web_" + Math.random().toString(36).substring(2, 12);
-  localStorage.setItem(STORAGE_KEY, sessionId);
+  // Session id is issued by the server (cryptographically random) on the
+  // first response and persisted here. We never generate our own id
+  // client-side — a client-guessable id could collide with or attach to
+  // another visitor's conversation. `null` means "no session yet"; the
+  // first /api/chat call omits session_id and stores whatever id comes back.
+  let sessionId = localStorage.getItem(STORAGE_KEY) || null;
 
   // Localization strings
   const I18N = {
@@ -269,6 +273,12 @@
         }
 
         const data = await response.json();
+        // Adopt the server-issued session id (first turn, or if the server
+        // replaced a rejected/expired one) and persist it for later turns.
+        if (data.session_id && data.session_id !== sessionId) {
+          sessionId = data.session_id;
+          localStorage.setItem(STORAGE_KEY, sessionId);
+        }
         addBotMessage(data.response || I18N[currentLang].error);
       } catch (err) {
         removeTyping();
@@ -300,8 +310,10 @@
     };
 
     clearBtn.onclick = async () => {
-      sessionId = "web_" + Math.random().toString(36).substring(2, 12);
-      localStorage.setItem(STORAGE_KEY, sessionId);
+      // Drop the current session id entirely rather than inventing a new
+      // one client-side; the next message gets a fresh, server-issued id.
+      sessionId = null;
+      localStorage.removeItem(STORAGE_KEY);
       renderWelcome();
     };
 
