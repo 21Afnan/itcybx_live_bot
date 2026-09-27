@@ -25,6 +25,43 @@ def _verify_namespace_count(vector_store: PineconeVectorStore, namespace: str, e
     logger.info(f"Verified namespace '{namespace}': {actual}/{expected} vectors present.")
 
 
+def _build_and_swap_namespace(vector_store: PineconeVectorStore, namespace: str, chunks, vectors):
+    """
+    Upserts into a staging namespace first and verifies it fully succeeded
+    BEFORE touching the live namespace, then repeats the same proven-good
+    upsert into the live namespace. Pinecone's API has no atomic
+    rename/alias primitive, so this can't be made fully atomic — but
+    proving the upsert works against staging first (network reachable,
+    batches all landing, count matches) makes a subsequent failure on the
+    identical live upsert far less likely. If the live swap DOES fail
+    partway, the staging namespace is deliberately left in place (not
+    cleaned up) as a recovery copy, and the error says so.
+    """
+    staging_ns = f"{namespace}_staging"
+
+    logger.info(f"Validating upsert against staging namespace '{staging_ns}' before touching '{namespace}'...")
+    vector_store.clear_namespace(staging_ns)
+    vector_store.upsert_chunks(chunks, vectors, namespace=staging_ns, batch_size=50)
+    _verify_namespace_count(vector_store, staging_ns, expected=len(chunks))
+
+    try:
+        vector_store.clear_namespace(namespace)
+        vector_store.upsert_chunks(chunks, vectors, namespace=namespace, batch_size=50)
+        _verify_namespace_count(vector_store, namespace, expected=len(chunks))
+    except Exception:
+        logger.error(
+            f"Live swap into '{namespace}' failed after staging validation succeeded. "
+            f"'{staging_ns}' has been LEFT IN PLACE as a verified-good recovery copy — "
+            f"it is not queried by the live bot, but its vectors match what should be "
+            f"in '{namespace}'. Investigate before re-running."
+        )
+        raise
+
+    # Both namespaces now hold identical data; drop the temporary copy.
+    vector_store.clear_namespace(staging_ns)
+    logger.info(f"Swap into '{namespace}' verified successfully; staging namespace cleaned up.")
+
+
 def build_knowledge_base():
     """
     Main ingestion pipeline:
@@ -62,16 +99,12 @@ def build_knowledge_base():
     en_vectors = embedder.embed_documents(en_texts, batch_size=32) if en_chunks else []
     ar_vectors = embedder.embed_documents(ar_texts, batch_size=32) if ar_chunks else []
 
-    logger.info("\n--- [Step 3/3] Replacing Live Namespaces ---")
+    logger.info("\n--- [Step 3/3] Validating via Staging, Then Replacing Live Namespaces ---")
     if en_chunks:
-        vector_store.clear_namespace("kb_en")
-        vector_store.upsert_chunks(en_chunks, en_vectors, namespace="kb_en", batch_size=50)
-        _verify_namespace_count(vector_store, "kb_en", expected=len(en_chunks))
+        _build_and_swap_namespace(vector_store, "kb_en", en_chunks, en_vectors)
 
     if ar_chunks:
-        vector_store.clear_namespace("kb_ar")
-        vector_store.upsert_chunks(ar_chunks, ar_vectors, namespace="kb_ar", batch_size=50)
-        _verify_namespace_count(vector_store, "kb_ar", expected=len(ar_chunks))
+        _build_and_swap_namespace(vector_store, "kb_ar", ar_chunks, ar_vectors)
 
     # 5. Fetch updated stats
     time.sleep(2)  # Allow Pinecone stats to refresh
