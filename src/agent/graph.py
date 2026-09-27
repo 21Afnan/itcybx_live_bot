@@ -1,13 +1,11 @@
 # src/agent/graph.py
 
-import uuid
 from typing import TypedDict, Annotated, Sequence, Literal, Optional, List, Dict
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage
 from langchain_mistralai import ChatMistralAI
 from langgraph.graph import StateGraph, END, START
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
-from langgraph.checkpoint.memory import MemorySaver
 
 from src.config.settings import MISTRAL_API_KEY, LLM_MODEL
 from src.tools.faq_tool import search_knowledge_base
@@ -44,8 +42,12 @@ class ItCybxAgent:
         self.tools = [search_knowledge_base]
         self.llm_with_tools = self.llm.bind_tools(self.tools)
 
-        # Build and compile graph
-        self.memory = MemorySaver()
+        # Build and compile graph. No checkpointer: SessionStore (see
+        # src/memory/session_store.py) is the single source of truth for
+        # multi-turn history, replayed into `messages` on every call. A
+        # LangGraph checkpointer here would be redundant, in-process-only
+        # state that (a) doesn't survive restarts or multiple workers and
+        # (b) accumulates one orphaned checkpoint thread per turn forever.
         self.graph = self._build_graph()
         logger.info("LangGraph IT Cybx Agent compiled successfully.")
 
@@ -112,8 +114,9 @@ class ItCybxAgent:
         )
         workflow.add_edge("tools", "agent")
 
-        # 3. Compile with in-memory checkpointer
-        return workflow.compile(checkpointer=self.memory)
+        # 3. Compile stateless: each invoke() call is self-contained,
+        # given a full message list by chat() below.
+        return workflow.compile()
 
     @staticmethod
     def _clean_closing_filler(text: str) -> str:
@@ -150,15 +153,10 @@ class ItCybxAgent:
         Processes a user turn and returns the final assistant response string.
         Automatically detects Arabic script if language is 'auto'.
 
-        If `history` is provided (e.g. loaded from the durable SessionStore),
-        the full conversation is rebuilt from it and replayed under a fresh,
-        call-scoped checkpointer thread. This makes the caller's persisted
-        history the source of truth for multi-turn context, instead of relying
-        on LangGraph's in-process MemorySaver \u2014 which only lives for the
-        lifetime of a single process and does not survive restarts or get
-        shared across multiple worker processes. When `history` is omitted
-        (e.g. the CLI), behavior falls back to the previous thread-based
-        in-process memory.
+        `history` (prior turns as {"role", "content"} dicts, e.g. loaded from
+        the durable SessionStore) is replayed into the message list on every
+        call, since the graph itself is stateless. `thread_id` is used only
+        for logging \u2014 it has no effect on model context.
         """
         # Auto-detect language if requested or if Arabic characters exist
         if language == "auto":
@@ -167,33 +165,21 @@ class ItCybxAgent:
         else:
             detected_lang = language.lower()
 
-        if history:
-            messages: List[BaseMessage] = []
-            for turn in history:
-                role = turn.get("role")
-                content = turn.get("content", "")
-                if not content:
-                    continue
-                if role == "user":
-                    messages.append(HumanMessage(content=content))
-                elif role == "assistant":
-                    messages.append(AIMessage(content=content))
-            messages.append(HumanMessage(content=user_message))
-            inputs = {"messages": messages, "language": detected_lang}
-            # Call-scoped thread id so the in-process checkpointer never
-            # accumulates duplicate state across turns for the same session.
-            graph_thread_id = f"{thread_id}:{uuid.uuid4().hex[:8]}"
-        else:
-            inputs = {
-                "messages": [HumanMessage(content=user_message)],
-                "language": detected_lang,
-            }
-            graph_thread_id = thread_id
-
-        config = {"configurable": {"thread_id": graph_thread_id}}
+        messages: List[BaseMessage] = []
+        for turn in (history or []):
+            role = turn.get("role")
+            content = turn.get("content", "")
+            if not content:
+                continue
+            if role == "user":
+                messages.append(HumanMessage(content=content))
+            elif role == "assistant":
+                messages.append(AIMessage(content=content))
+        messages.append(HumanMessage(content=user_message))
+        inputs = {"messages": messages, "language": detected_lang}
 
         logger.info(f"Processing chat turn for thread '{thread_id}' [lang={detected_lang}]: '{user_message}'")
-        output = self.graph.invoke(inputs, config=config)
+        output = self.graph.invoke(inputs)
         
         last_msg = output["messages"][-1]
         raw_content = last_msg.content

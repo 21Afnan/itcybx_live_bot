@@ -39,6 +39,7 @@ def run_chat_cli():
     agent = get_agent()
     thread_id = f"cli_{uuid.uuid4().hex[:8]}"
     current_lang = "en"
+    history = []  # local {"role", "content"} turns; the graph itself is stateless
 
     print(f"Session started! [Thread ID: {thread_id}] [Auto Language Detection: ON]\n")
 
@@ -56,6 +57,7 @@ def run_chat_cli():
 
             if user_input.lower() == "/clear":
                 thread_id = f"cli_{uuid.uuid4().hex[:8]}"
+                history = []
                 print(f"\n🔄 Conversation memory cleared. [New Thread ID: {thread_id}]\n")
                 continue
 
@@ -74,7 +76,10 @@ def run_chat_cli():
                 user_message=user_input,
                 thread_id=thread_id,
                 language=current_lang,
+                history=history,
             )
+            history.append({"role": "user", "content": user_input})
+            history.append({"role": "assistant", "content": response})
 
             print(f"[IT Cybx Bot]:\n{response}\n")
             print("-" * 60 + "\n")
