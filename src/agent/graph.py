@@ -34,8 +34,15 @@ class ItCybxAgent:
             model=LLM_MODEL,
             api_key=MISTRAL_API_KEY,
             temperature=0.1,  # Low temperature for factual precision
-            max_retries=6,
-            timeout=30,
+            # max_retries=0: retries are handled entirely by the explicit,
+            # bounded loop in _call_model below. Stacking the SDK's own
+            # retry layer on top of that loop made the worst-case duration
+            # of a single call unbounded and able to run well past the
+            # API-level request deadline (src/api/main.py) in the
+            # background, since a blocking thread can't be cancelled once
+            # started. One retry mechanism, with a known worst-case time.
+            max_retries=0,
+            timeout=12,
         )
 
         # Single registered tool: FAQ knowledge-base search
@@ -67,23 +74,28 @@ class ItCybxAgent:
             # Update system prompt if language changed
             messages[0] = SystemMessage(content=system_prompt)
 
-        # Robust execution with exponential backoff on 429 rate limits
-        for attempt in range(5):
+        # Bounded retry with backoff on 429 rate limits. Worst case here is
+        # ~3 * 12s (timeout per attempt) + ~3s (backoff sleeps) = ~39s, kept
+        # deliberately under the API layer's 45s request deadline
+        # (src/api/main.py CHAT_REQUEST_DEADLINE_SECONDS) so a call that's
+        # genuinely going to fail finishes failing before that deadline
+        # fires, instead of continuing to retry in an orphaned background
+        # thread after the client has already been told it timed out.
+        max_attempts = 3
+        for attempt in range(max_attempts):
             try:
                 response = self.llm_with_tools.invoke(messages)
                 return {"messages": [response]}
             except Exception as e:
                 err_str = str(e).lower()
-                if "429" in err_str or "rate limit" in err_str:
-                    wait_time = (attempt + 1) * 2.5
-                    logger.warning(f"Mistral 429 rate limit hit. Retrying in {wait_time}s (attempt {attempt + 1}/5)...")
+                is_last_attempt = attempt == max_attempts - 1
+                if not is_last_attempt and ("429" in err_str or "rate limit" in err_str):
+                    wait_time = (attempt + 1) * 1.5
+                    logger.warning(f"Mistral 429 rate limit hit. Retrying in {wait_time}s (attempt {attempt + 1}/{max_attempts})...")
                     time.sleep(wait_time)
                 else:
-                    logger.error(f"Error invoking LLM: {e}")
-                    raise e
-        # Final attempt
-        response = self.llm_with_tools.invoke(messages)
-        return {"messages": [response]}
+                    logger.error(f"Error invoking LLM (attempt {attempt + 1}/{max_attempts}): {e}")
+                    raise
 
     def _should_continue(self, state: AgentState) -> Literal["tools", "__end__"]:
         """Determines whether to call a tool or finish the turn."""
@@ -178,7 +190,7 @@ class ItCybxAgent:
         messages.append(HumanMessage(content=user_message))
         inputs = {"messages": messages, "language": detected_lang}
 
-        logger.info(f"Processing chat turn for thread '{thread_id}' [lang={detected_lang}]: '{user_message}'")
+        logger.info(f"Processing chat turn for thread '{thread_id}' [lang={detected_lang}, len={len(user_message)} chars]")
         output = self.graph.invoke(inputs)
         
         last_msg = output["messages"][-1]

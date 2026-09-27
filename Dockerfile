@@ -14,6 +14,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy project code
 COPY . .
 
+# Run as a non-root user rather than the container default (root)
+RUN useradd --create-home --shell /bin/bash appuser \
+    && chown -R appuser:appuser /app
+USER appuser
+
 # Set default port
 ENV PORT=8000
 EXPOSE 8000

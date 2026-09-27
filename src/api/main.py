@@ -6,6 +6,8 @@ import sys
 import secrets
 import time
 import asyncio
+import threading
+import collections
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Literal
 
@@ -163,53 +165,123 @@ MAX_CONCURRENT_CHAT_TURNS = 10
 CHAT_REQUEST_DEADLINE_SECONDS = 45
 _chat_concurrency_limiter = asyncio.Semaphore(MAX_CONCURRENT_CHAT_TURNS)
 
+# Per-session lock: serializes overlapping requests for the SAME session_id
+# (e.g. a double-click send, a client retry, or a malicious duplicate) so
+# they can't interleave their read-history / save-turn / invoke-agent steps
+# and corrupt turn ordering. Different sessions are never blocked by each
+# other. Locks are created lazily and intentionally never removed; for a
+# small bot's session volume this is a few hundred bytes each, not a
+# meaningful leak, but a periodic sweep would be the next step at scale.
+_session_locks: Dict[str, threading.Lock] = {}
+_session_locks_guard = threading.Lock()
 
-def _run_chat_turn_sync(session_id: str, user_msg: str, req_lang: str):
-    """All blocking work for one turn. Runs off the event loop via run_in_threadpool."""
+
+def _get_session_lock(session_id: str) -> threading.Lock:
+    with _session_locks_guard:
+        lock = _session_locks.get(session_id)
+        if lock is None:
+            lock = threading.Lock()
+            _session_locks[session_id] = lock
+        return lock
+
+
+# Basic per-IP abuse control. A concurrency cap alone doesn't stop one
+# client from sending many requests in sequence; this bounds sustained
+# volume from a single source. In-memory / per-process only — like the
+# local session store fallback, this resets on restart and isn't shared
+# across multiple worker processes. Fine for a small single-worker
+# deployment; a real production gate at scale needs a shared store (e.g.
+# Redis) for this too.
+RATE_LIMIT_MAX_REQUESTS = 20
+RATE_LIMIT_WINDOW_SECONDS = 60
+_rate_limit_buckets: Dict[str, collections.deque] = {}
+_rate_limit_guard = threading.Lock()
+
+
+def _check_rate_limit(client_key: str) -> bool:
+    """Returns True if this request is allowed, False if the client should be rate-limited."""
+    now = time.time()
+    with _rate_limit_guard:
+        bucket = _rate_limit_buckets.setdefault(client_key, collections.deque())
+        while bucket and now - bucket[0] > RATE_LIMIT_WINDOW_SECONDS:
+            bucket.popleft()
+        if len(bucket) >= RATE_LIMIT_MAX_REQUESTS:
+            return False
+        bucket.append(now)
+        return True
+
+
+def _run_chat_turn_sync(supplied_id: str, user_msg: str, req_lang: str):
+    """
+    All blocking work for one turn, including resolving the session id.
+    Runs off the event loop via run_in_threadpool.
+    """
     agent = get_agent()
     session_store = get_session_store()
 
-    prior_history = session_store.get_history(session_id)
-    session_store.save_turn(session_id, role="user", content=user_msg, language=req_lang)
+    # Only trust a client-supplied id if it (a) has the shape of one we
+    # issue, AND (b) was actually issued by us before (session_exists).
+    # Shape alone isn't provenance — a well-formed-but-never-issued string
+    # could otherwise be picked by any caller and used as if it were a real
+    # session, defeating the point of a high-entropy server-issued id.
+    if _SESSION_ID_RE.match(supplied_id) and session_store.session_exists(supplied_id):
+        session_id = supplied_id
+    else:
+        session_id = _new_session_id()
 
-    bot_response = agent.chat(
-        user_message=user_msg,
-        thread_id=session_id,
-        language=req_lang,
-        history=prior_history,
-    )
+    # Serialize this session's ENTIRE turn (history read through both saves)
+    # against any other concurrent request for the same session_id. This is
+    # what stops a double-click, client retry, or duplicate request from
+    # interleaving reads/writes and corrupting turn order — the second
+    # request simply waits for the first to fully finish before it starts.
+    with _get_session_lock(session_id):
+        prior_history = session_store.get_history(session_id)
+        session_store.save_turn(session_id, role="user", content=user_msg, language=req_lang)
 
-    has_arabic = any('؀' <= char <= 'ۿ' or 'ݐ' <= char <= 'ݿ' for char in bot_response)
-    detected_lang = "ar" if has_arabic else "en"
-    session_store.save_turn(session_id, role="assistant", content=bot_response, language=detected_lang)
+        bot_response = agent.chat(
+            user_message=user_msg,
+            thread_id=session_id,
+            language=req_lang,
+            history=prior_history,
+        )
 
-    return bot_response, detected_lang
+        has_arabic = any('؀' <= char <= 'ۿ' or 'ݐ' <= char <= 'ݿ' for char in bot_response)
+        detected_lang = "ar" if has_arabic else "en"
+        session_store.save_turn(session_id, role="assistant", content=bot_response, language=detected_lang)
+
+    return session_id, bot_response, detected_lang
 
 
 @app.post("/api/chat", response_model=ChatResponse, tags=["Chat"])
-async def handle_chat(payload: ChatRequest):
+async def handle_chat(payload: ChatRequest, request: Request):
     """
     Main chat endpoint for conversation turns with the LangGraph agent.
     Maintains session history and executes tools automatically.
     """
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(client_ip):
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded: max {RATE_LIMIT_MAX_REQUESTS} requests per {RATE_LIMIT_WINDOW_SECONDS}s.",
+        )
+
     supplied_id = payload.session_id.strip() if payload.session_id else ""
-    # Only trust a client-supplied id if it has the shape of one we issued
-    # ourselves. Anything else (short, guessed, malformed) is replaced with
-    # a fresh, unguessable one rather than silently adopted as a session to
-    # continue — this is what stops a caller from attaching to or colliding
-    # with another visitor's conversation by supplying an arbitrary id.
-    session_id = supplied_id if _SESSION_ID_RE.match(supplied_id) else _new_session_id()
+    # Actual session id resolution (shape + provenance check) happens inside
+    # _run_chat_turn_sync, off the event loop. This is only a display
+    # placeholder for the error/timeout paths below, where the real
+    # resolution may never have completed.
+    fallback_display_id = supplied_id if _SESSION_ID_RE.match(supplied_id) else _new_session_id()
     user_msg = payload.message
     req_lang = payload.language
 
-    logger.info(f"Incoming /api/chat [session={session_id}, lang={req_lang}]: '{user_msg}'")
+    logger.info(f"Incoming /api/chat [session~={fallback_display_id}, lang={req_lang}, ip={client_ip}]: (len={len(user_msg)} chars)")
 
     is_ar = req_lang == "ar" or any('\u0600' <= c <= '\u06FF' for c in user_msg)
 
     try:
         async with _chat_concurrency_limiter:
-            bot_response, detected_lang = await asyncio.wait_for(
-                run_in_threadpool(_run_chat_turn_sync, session_id, user_msg, req_lang),
+            session_id, bot_response, detected_lang = await asyncio.wait_for(
+                run_in_threadpool(_run_chat_turn_sync, supplied_id, user_msg, req_lang),
                 timeout=CHAT_REQUEST_DEADLINE_SECONDS,
             )
 
@@ -222,7 +294,7 @@ async def handle_chat(payload: ChatRequest):
         )
 
     except asyncio.TimeoutError:
-        logger.error(f"Chat turn for session {session_id} exceeded the {CHAT_REQUEST_DEADLINE_SECONDS}s deadline.")
+        logger.error(f"Chat turn for session ~{fallback_display_id} exceeded the {CHAT_REQUEST_DEADLINE_SECONDS}s deadline.")
         fallback_msg = (
             "\u0646\u0639\u062A\u0630\u0631\u060C \u0627\u0633\u062A\u063A\u0631\u0642\u062A \u0627\u0644\u0625\u062C\u0627\u0628\u0629 \u0648\u0642\u062A\u0627\u064B \u0623\u0637\u0648\u0644 \u0645\u0646 \u0627\u0644\u0645\u062A\u0648\u0642\u0639. \u064A\u0631\u062C\u0649 \u0627\u0644\u0645\u062D\u0627\u0648\u0644\u0629 \u0645\u0631\u0629 \u0623\u062E\u0631\u0649 \u0623\u0648 \u0627\u0644\u062A\u0648\u0627\u0635\u0644 \u0645\u0639\u0646\u0627 \u0639\u0628\u0631 itcybx@gmail.com."
             if is_ar
@@ -230,14 +302,14 @@ async def handle_chat(payload: ChatRequest):
         )
         return ChatResponse(
             response=fallback_msg,
-            session_id=session_id,
+            session_id=fallback_display_id,
             language="ar" if is_ar else "en",
             timestamp=time.time(),
             status="timeout",
         )
 
     except Exception as e:
-        logger.error(f"Error processing chat request for session {session_id}: {e}")
+        logger.error(f"Error processing chat request for session ~{fallback_display_id}: {e}")
         fallback_msg = (
             "نعتذر، نواجه ضغطاً مؤقتاً في الخدمة حالياً. يمكنك التواصل مباشرة مع فريقنا عبر itcybx@gmail.com."
             if is_ar
@@ -245,7 +317,7 @@ async def handle_chat(payload: ChatRequest):
         )
         return ChatResponse(
             response=fallback_msg,
-            session_id=session_id,
+            session_id=fallback_display_id,
             language="ar" if is_ar else "en",
             timestamp=time.time(),
             status="fallback",

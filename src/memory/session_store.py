@@ -6,7 +6,7 @@ import threading
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 
-from src.config.settings import REDIS_URL, DATA_DIR
+from src.config.settings import REDIS_URL, DATA_DIR, ENV
 from src.utils.logger import get_logger
 
 logger = get_logger("SessionStore")
@@ -36,8 +36,27 @@ class SessionStore:
                 self.redis_client.ping()
                 logger.info(f"Connected to Redis session store at: {self.redis_url}")
             except Exception as e:
+                if ENV == "production":
+                    error_msg = (
+                        f"ENV=production requires a working Redis session store, but connecting "
+                        f"to REDIS_URL failed: {e}. Refusing to silently fall back to the "
+                        f"single-process-only local file store in production. Fix Redis "
+                        f"connectivity, or unset ENV (or set ENV=development) to explicitly "
+                        f"accept the local-file fallback."
+                    )
+                    logger.error(error_msg)
+                    raise RuntimeError(error_msg) from e
                 logger.warning(f"Could not connect to Redis ({e}). Falling back to in-memory session store.")
                 self.redis_client = None
+        elif ENV == "production":
+            error_msg = (
+                "ENV=production requires REDIS_URL to be set (a shared session store is "
+                "mandatory once you're running for real, since the local-file fallback is "
+                "only safe for a single process). Set REDIS_URL, or unset ENV (or set "
+                "ENV=development) to explicitly accept the local-file fallback."
+            )
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
         else:
             logger.warning(
                 "No REDIS_URL configured. Using local in-memory session store backed by "
@@ -45,7 +64,8 @@ class SessionStore:
                 "with no --workers flag), but is NOT safe if you ever run multiple worker "
                 "processes: each one loads and rewrites the whole file independently, so "
                 "concurrent processes will silently overwrite each other's saved sessions. "
-                "Set REDIS_URL before scaling beyond a single worker."
+                "Set REDIS_URL before scaling beyond a single worker, or set ENV=production "
+                "to make this a hard startup failure instead of a warning."
             )
 
         # Load existing local sessions if memory fallback is used
@@ -99,6 +119,24 @@ class SessionStore:
                 self._memory_store[session_id] = []
             self._memory_store[session_id].append(turn)
             self._persist_local_sessions()
+
+    def session_exists(self, session_id: str) -> bool:
+        """
+        True only if this exact id was previously issued and has a record
+        (i.e. at least one saved turn). Used to distinguish a real,
+        server-issued session id from a well-formed-but-never-issued string
+        a caller could pick on their own — format alone (charset/length)
+        isn't proof of provenance, only entropy is.
+        """
+        if self.redis_client:
+            try:
+                key = f"itcybx:session:{session_id}"
+                return bool(self.redis_client.exists(key))
+            except Exception as e:
+                logger.warning(f"Redis session_exists error: {e}. Falling back to in-memory.")
+
+        with self._memory_lock:
+            return session_id in self._memory_store
 
     def get_history(self, session_id: str, max_turns: int = 30) -> List[Dict[str, Any]]:
         """

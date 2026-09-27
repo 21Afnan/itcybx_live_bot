@@ -51,6 +51,11 @@ PINECONE_INDEX_NAME = get_env("PINECONE_INDEX_NAME", required=True)
 # Optional Integrations (Redis for session memory)
 REDIS_URL = get_env("REDIS_URL", required=False, default="")
 
+# Deployment mode. "production" enforces stricter runtime requirements
+# (e.g. a working Redis session store is mandatory, not an optional
+# fallback) that would be unnecessary friction for local development.
+ENV = get_env("ENV", required=False, default="development").lower()
+
 # Admin key required to read/delete session transcripts via the API. Left
 # unset by default so those endpoints stay LOCKED (fail-closed) until an
 # operator explicitly configures it.
