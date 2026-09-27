@@ -179,9 +179,9 @@ async def handle_chat(payload: ChatRequest):
         logger.error(f"Error processing chat request for session {session_id}: {e}")
         is_ar = req_lang == "ar" or any('\u0600' <= c <= '\u06FF' for c in user_msg)
         fallback_msg = (
-            "نعتذر، نواجه ضغطاً مؤقتاً في الخدمة حالياً. يمكنك التواصل مباشرة مع فريقنا عبر info@itcybx.co.uk أو +44 793 389 5500."
+            "نعتذر، نواجه ضغطاً مؤقتاً في الخدمة حالياً. يمكنك التواصل مباشرة مع فريقنا عبر itcybx@gmail.com."
             if is_ar
-            else "We are currently experiencing high traffic. For immediate assistance, please contact our team at info@itcybx.co.uk or +44 793 389 5500."
+            else "We are currently experiencing high traffic. For immediate assistance, please contact our team at itcybx@gmail.com."
         )
         return ChatResponse(
             response=fallback_msg,
