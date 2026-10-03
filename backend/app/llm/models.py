@@ -213,8 +213,7 @@ async def _cli(question: str, language: str, force_fallback: bool) -> None:
 async def _check_keys() -> None:
     """Send a tiny message through each model in the chain and say which work."""
     chain = model_chain()
-    print(f"{len(settings.mistral_keys)} Mistral key(s) found. Testing each one:
-")
+    print(f"{len(settings.mistral_keys)} Mistral key(s) found. Testing each one:\n")
     for name, stream in chain:
         usage = Usage()
         start = time.monotonic()
