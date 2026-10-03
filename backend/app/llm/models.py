@@ -2,6 +2,7 @@
 
     python -m app.llm.models --test "What is the Growth Audit?"
     python -m app.llm.models --test "What is the Growth Audit?" --force-fallback
+    python -m app.llm.models --check-keys
 
 The order comes from .env: with LLM_PRIMARY=mistral it is every Mistral key
 (MISTRAL_API_KEY, then each one in MISTRAL_API_KEYS), then Claude; with
@@ -209,13 +210,35 @@ async def _cli(question: str, language: str, force_fallback: bool) -> None:
     print(f"first word after: {first or 0:.1f}s   total: {time.monotonic() - start:.1f}s")
 
 
+async def _check_keys() -> None:
+    """Send a tiny message through each model in the chain and say which work."""
+    chain = model_chain()
+    print(f"{len(settings.mistral_keys)} Mistral key(s) found. Testing each one:
+")
+    for name, stream in chain:
+        usage = Usage()
+        start = time.monotonic()
+        try:
+            async for _ in stream("Reply with OK.", [{"role": "user", "content": "OK?"}], usage):
+                pass
+            print(f"  OK      {name:<11} {usage.model_used}  ({time.monotonic() - start:.1f}s)")
+        except Exception as e:
+            print(f"  FAILED  {name:<11} {type(e).__name__}: {str(e)[:90]}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Ask the AI one question.")
-    parser.add_argument("--test", required=True, metavar="QUESTION")
+    parser.add_argument("--test", metavar="QUESTION")
+    parser.add_argument("--check-keys", action="store_true", help="test every AI key")
     parser.add_argument("--language", default="en", choices=["en", "ar"])
     parser.add_argument("--force-fallback", action="store_true", help="skip Claude, use Mistral")
     args = parser.parse_args()
-    asyncio.run(_cli(args.test, args.language, args.force_fallback))
+    if args.check_keys:
+        asyncio.run(_check_keys())
+    elif args.test:
+        asyncio.run(_cli(args.test, args.language, args.force_fallback))
+    else:
+        parser.print_help()
 
 
 if __name__ == "__main__":
