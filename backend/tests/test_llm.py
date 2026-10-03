@@ -101,3 +101,8 @@ def test_system_prompt_is_marked_for_caching():
     blocks = claude_system("rules and knowledge")
     assert blocks == [{"type": "text", "text": "rules and knowledge",
                        "cache_control": {"type": "ephemeral"}}]
+
+
+def test_fallback_model_gets_the_key_rules_repeated_at_the_end():
+    assert "NO public price" in models.FALLBACK_REMINDER
+    assert '"agency"' in models.FALLBACK_REMINDER

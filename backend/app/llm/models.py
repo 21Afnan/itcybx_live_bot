@@ -21,6 +21,15 @@ from app.config import settings
 from app.llm.prompts import claude_system, system_text
 
 
+FALLBACK_REMINDER = """# Most important rules (always follow)
+- Growth Sprint and Growth Retainer have NO public price. Never give a price, range,
+  estimate or "starting from" figure for them, even if asked for a ballpark. Say they
+  are scoped after the Growth Audit.
+- Only state facts and numbers that appear in the knowledge above. Never invent any.
+- Call IT Cybx a "growth studio", never an "agency".
+- Answer the question in the first sentence. About 60 words. Reply in the visitor's language."""
+
+
 class LLMUnavailable(Exception):
     """Neither Claude nor Mistral could answer."""
 
@@ -75,7 +84,12 @@ async def claude_stream(
 async def mistral_stream(
     system: str, messages: list[dict], usage: Usage, instruction: str = ""
 ) -> AsyncIterator[str]:
-    """Stream a reply from Mistral (the fallback model)."""
+    """Stream a reply from Mistral (the fallback model).
+
+    The smaller fallback model tends to forget rules placed before a long
+    knowledge block, so the most important ones are repeated at the end.
+    """
+    system = f"{system}\n\n{FALLBACK_REMINDER}"
     if instruction:
         system = f"{system}\n\n# Note for this reply\n{instruction}"
     client = Mistral(
