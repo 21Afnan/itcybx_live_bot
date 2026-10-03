@@ -44,3 +44,10 @@ Thumbs.db
 # Documents
 docx/
 *.docx
+
+# Secrets (Google service account key etc.)
+secrets/
+*service-account*.json
+
+# Test cache
+.pytest_cache/
