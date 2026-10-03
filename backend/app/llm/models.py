@@ -1,18 +1,24 @@
-"""Talks to the AI models: the main one (LLM_PRIMARY), the other if it fails.
+"""Talks to the AI models, trying them in order until one answers.
 
     python -m app.llm.models --test "What is the Growth Audit?"
     python -m app.llm.models --test "What is the Growth Audit?" --force-fallback
 
-Claude is given LLM_TIMEOUT_SECONDS and one retry. If it still fails (or
-declines) before writing anything, Mistral answers instead. If both fail,
+The order comes from .env: with LLM_PRIMARY=mistral it is every Mistral key
+(MISTRAL_API_KEY, then each one in MISTRAL_API_KEYS), then Claude; with
+LLM_PRIMARY=claude it is Claude first, then the Mistral keys.
+
+If a model fails (limit reached, timeout, error) before writing anything,
+the next one answers instead, and the failed one is skipped for
+COOLDOWN_SECONDS so visitors don't wait on it again. If all fail,
 LLMUnavailable is raised so the caller can show the contact options.
 """
 
 import argparse
 import asyncio
+import functools
 import time
 from dataclasses import dataclass
-from typing import AsyncIterator
+from typing import AsyncIterator, Callable
 
 import anthropic
 from mistralai.client import Mistral
@@ -31,8 +37,12 @@ FALLBACK_REMINDER = """# Most important rules (always follow)
 - Answer the question in the first sentence. About 60 words. Reply in the visitor's language."""
 
 
+COOLDOWN_SECONDS = 60
+_resting_until: dict[str, float] = {}  # model/key name -> time it may be tried again
+
+
 class LLMUnavailable(Exception):
-    """Neither Claude nor Mistral could answer."""
+    """None of the models could answer."""
 
 
 @dataclass
@@ -44,6 +54,7 @@ class Usage:
     tokens_out: int = 0
     cached_tokens: int = 0
     fallback_used: bool = False
+    source: str = ""  # which entry of the chain answered, e.g. "mistral-2"
 
 
 async def claude_stream(
@@ -83,7 +94,7 @@ async def claude_stream(
 
 
 async def mistral_stream(
-    system: str, messages: list[dict], usage: Usage, instruction: str = ""
+    system: str, messages: list[dict], usage: Usage, instruction: str = "", api_key: str = ""
 ) -> AsyncIterator[str]:
     """Stream a reply from Mistral.
 
@@ -96,7 +107,7 @@ async def mistral_stream(
     if instruction:
         system = f"{system}\n\n# Note for this reply\n{instruction}"
     client = Mistral(
-        api_key=settings.mistral_api_key.get_secret_value(),
+        api_key=api_key or settings.mistral_api_key.get_secret_value(),
         timeout_ms=int(settings.llm_timeout_seconds * 1000),
     )
     response = await client.chat.stream_async(
@@ -115,6 +126,20 @@ async def mistral_stream(
             usage.model_used = chunk.model or settings.mistral_model
 
 
+def model_chain() -> list[tuple[str, Callable]]:
+    """The models to try, in order, as (name, stream function).
+
+    Names are for logs and cooldowns ("mistral-1", "mistral-2", "claude");
+    they never contain the keys themselves.
+    """
+    mistral = [
+        (f"mistral-{i}", functools.partial(mistral_stream, api_key=key))
+        for i, key in enumerate(settings.mistral_keys, start=1)
+    ]
+    claude = [("claude", claude_stream)] if settings.anthropic_api_key.get_secret_value() else []
+    return mistral + claude if settings.llm_primary == "mistral" else claude + mistral
+
+
 async def stream_reply(
     question: str,
     language: str,
@@ -123,38 +148,35 @@ async def stream_reply(
     force_fallback: bool = False,
     instruction: str = "",
 ) -> AsyncIterator[str]:
-    """Stream the bot's reply to `question`, falling back to the other model if needed.
+    """Stream the bot's reply to `question`, moving down the model chain on failure.
 
-    LLM_PRIMARY in .env picks the main model ("claude" or "mistral"); the
-    other one is the fallback. `force_fallback` skips the main model.
+    `force_fallback` skips the first model in the chain (for testing).
     `history` is the earlier messages ({"role", "content"}), oldest first.
     `instruction` is an optional note for this reply only.
     `usage` is filled in once the reply is complete.
     """
     system = system_text(question, language)
     messages = [*history, {"role": "user", "content": question}]
-    primary, fallback = (
-        (mistral_stream, claude_stream) if settings.llm_primary == "mistral"
-        else (claude_stream, mistral_stream)
-    )
+    chain = model_chain()[1:] if force_fallback else model_chain()
+    now = time.monotonic()
+    ready = [m for m in chain if _resting_until.get(m[0], 0) <= now]
+    resting = [m for m in chain if m not in ready]  # tried last, in case all are resting
 
-    if not force_fallback:
+    for position, (name, stream) in enumerate(ready + resting):
         started = False
         try:
-            async for text in primary(system, messages, usage, instruction):
+            async for text in stream(system, messages, usage, instruction):
                 started = True
                 yield text
+            usage.fallback_used = force_fallback or name != chain[0][0]
+            usage.source = name
+            _resting_until.pop(name, None)
             return
         except Exception:
             if started:  # half a reply already went out: don't start a second one
-                raise LLMUnavailable("The main model stopped mid-reply")
-
-    usage.fallback_used = True
-    try:
-        async for text in fallback(system, messages, usage, instruction):
-            yield text
-    except Exception as e:
-        raise LLMUnavailable("The fallback model failed too") from e
+                raise LLMUnavailable(f"{name} stopped mid-reply")
+            _resting_until[name] = time.monotonic() + COOLDOWN_SECONDS
+    raise LLMUnavailable("every model failed")
 
 
 async def summarize(summary: str, messages: list[dict], language: str) -> str:
@@ -182,7 +204,7 @@ async def _cli(question: str, language: str, force_fallback: bool) -> None:
         print(f"\n\nBoth models failed: {e} ({type(e.__cause__).__name__})")
         return
     print("\n")
-    print(f"model: {usage.model_used}   fallback used: {'yes' if usage.fallback_used else 'no'}")
+    print(f"model: {usage.model_used} ({usage.source})   fallback used: {'yes' if usage.fallback_used else 'no'}")
     print(f"tokens in: {usage.tokens_in}   from cache: {usage.cached_tokens}   out: {usage.tokens_out}")
     print(f"first word after: {first or 0:.1f}s   total: {time.monotonic() - start:.1f}s")
 

@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     anthropic_api_key: SecretStr = SecretStr("")
     anthropic_model: str = "claude-sonnet-5-5"
     mistral_api_key: SecretStr = SecretStr("")
+    mistral_api_keys: SecretStr = SecretStr("")  # more Mistral keys, comma-separated, tried in order
     mistral_model: str = "mistral-large-latest"
     llm_timeout_seconds: float = 20
     max_output_tokens: int = 400
@@ -44,6 +45,13 @@ class Settings(BaseSettings):
     whatsapp_url: str = "https://wa.me/923104887999"
     contact_email: str = "info@itcybx.co.uk"
     contact_page_url: str = "https://itcybx.co.uk/contact/"
+
+    @property
+    def mistral_keys(self) -> list[str]:
+        """MISTRAL_API_KEY first, then each key in MISTRAL_API_KEYS (no blanks, no repeats)."""
+        keys = [self.mistral_api_key.get_secret_value(),
+                *self.mistral_api_keys.get_secret_value().split(",")]
+        return list(dict.fromkeys(k.strip() for k in keys if k.strip()))
 
     @property
     def allowed_origins_list(self) -> list[str]:

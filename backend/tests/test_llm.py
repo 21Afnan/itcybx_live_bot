@@ -7,6 +7,7 @@ import pytest
 from app.knowledge import loader
 from app.llm import models
 from app.llm.models import LLMUnavailable, Usage, stream_reply
+from pydantic import SecretStr
 from app.llm.prompts import claude_system
 
 
@@ -22,7 +23,7 @@ def collect(question="What is the Growth Audit?", **kwargs) -> tuple[str, Usage]
 def fake_model(name, chunks, fail_after=None):
     """A stand-in for claude_stream / mistral_stream."""
 
-    async def stream(system, messages, usage, instruction=""):
+    async def stream(system, messages, usage, instruction="", api_key=""):
         assert "IT Cybx Assistant Rules" in system  # rules + knowledge always sent
         for i, chunk in enumerate(chunks):
             if fail_after is not None and i == fail_after:
@@ -122,3 +123,58 @@ def test_claude_backs_up_mistral(monkeypatch):
     monkeypatch.setattr(models, "claude_stream", fake_model("claude", ["Backup."]))
     text, usage = collect()
     assert (text, usage.model_used, usage.fallback_used) == ("Backup.", "claude", True)
+
+
+def keyed_mistral(answers_by_key):
+    """A fake Mistral where each key either answers or fails (None)."""
+    calls = []
+
+    async def stream(system, messages, usage, instruction="", api_key=""):
+        calls.append(api_key)
+        if answers_by_key.get(api_key) is None:
+            raise TimeoutError("limit reached")
+        usage.model_used = "mistral"
+        yield answers_by_key[api_key]
+
+    stream.calls = calls
+    return stream
+
+
+def test_next_mistral_key_answers_when_the_first_is_limited(monkeypatch):
+    monkeypatch.setattr(models.settings, "llm_primary", "mistral")
+    monkeypatch.setattr(models.settings, "mistral_api_keys", SecretStr("key-2, key-3"))
+    fake = keyed_mistral({"test-mistral-key-1": None, "key-2": "From key 2."})
+    monkeypatch.setattr(models, "mistral_stream", fake)
+
+    text, usage = collect()
+
+    assert text == "From key 2."
+    assert usage.source == "mistral-2" and usage.fallback_used is True
+    assert fake.calls == ["test-mistral-key-1", "key-2"]
+
+
+def test_limited_key_rests_so_the_next_visitor_waits_less(monkeypatch):
+    monkeypatch.setattr(models.settings, "llm_primary", "mistral")
+    monkeypatch.setattr(models.settings, "mistral_api_keys", SecretStr("key-2"))
+    fake = keyed_mistral({"test-mistral-key-1": None, "key-2": "ok"})
+    monkeypatch.setattr(models, "mistral_stream", fake)
+
+    collect()
+    collect()
+
+    assert fake.calls == ["test-mistral-key-1", "key-2", "key-2"]  # key 1 skipped the 2nd time
+
+
+def test_claude_is_the_last_resort_after_every_mistral_key(monkeypatch):
+    monkeypatch.setattr(models.settings, "llm_primary", "mistral")
+    monkeypatch.setattr(models.settings, "mistral_api_keys", SecretStr("key-2"))
+    monkeypatch.setattr(models, "mistral_stream", keyed_mistral({}))
+    monkeypatch.setattr(models, "claude_stream", fake_model("claude", ["Claude here."]))
+    text, usage = collect()
+    assert (text, usage.source) == ("Claude here.", "claude")
+
+
+def test_keys_are_listed_once_without_blanks(monkeypatch):
+    monkeypatch.setattr(models.settings, "mistral_api_keys",
+                        SecretStr(" key-2 ,, test-mistral-key-1, key-3 "))
+    assert models.settings.mistral_keys == ["test-mistral-key-1", "key-2", "key-3"]
