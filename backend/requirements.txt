@@ -25,6 +25,9 @@ langgraph==1.2.12
 anthropic==1.11.0
 mistralai==3.0.0
 
+# Weekly website check
+apscheduler==3.11.3
+
 # Google Sheet lead alerts (service account sign-in)
 google-auth==2.59.1
 

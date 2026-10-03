@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
@@ -25,6 +26,7 @@ from app.config import settings
 from app.db.engine import get_engine
 from app.graph.build import GREETING, run_turn
 from app.graph.state import new_state
+from app.knowledge.sync import start_scheduler
 from app.leads.notify import notify_team
 from app.security import ratelimit
 
@@ -50,7 +52,16 @@ TOO_LONG = {
 }
 
 log = logging.getLogger("chatbot")
-app = FastAPI(title="IT Cybx Chatbot")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start the weekly website check with the server (not in tests)."""
+    scheduler = start_scheduler() if settings.app_env != "test" else None
+    yield
+    if scheduler:
+        scheduler.shutdown(wait=False)
+
+
+app = FastAPI(title="IT Cybx Chatbot", lifespan=lifespan)
 
 # Browsers on itcybx.co.uk may call the API; the check below rejects the rest.
 app.add_middleware(

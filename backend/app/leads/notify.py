@@ -87,6 +87,14 @@ async def send_email(row: list[str]) -> None:
     await asyncio.to_thread(_send, build_email(row))
 
 
+async def send_text_email(subject: str, body: str) -> None:
+    """A plain email to the team (used by the weekly website check)."""
+    msg = EmailMessage()
+    msg["Subject"], msg["From"], msg["To"] = subject, settings.smtp_user, settings.lead_email_to
+    msg.set_content(body)
+    await asyncio.to_thread(_send, msg)
+
+
 # ---- Google Sheet -------------------------------------------------------
 
 

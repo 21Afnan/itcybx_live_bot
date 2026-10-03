@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     database_url: str  # Supabase connection string, required
     redis_url: str = "redis://redis:6379/0"
     site_base_url: str = "https://itcybx.co.uk"
+    sync_cron: str = "0 3 * * 1"  # weekly website check: Monday 03:00 UTC
 
     # AI models. SecretStr keeps keys out of logs and error messages.
     anthropic_api_key: SecretStr = SecretStr("")

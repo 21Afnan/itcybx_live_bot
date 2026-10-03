@@ -6,7 +6,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from app.db.engine import db_session
-from app.db.models import Conversation, Lead, Message
+from app.db.models import Conversation, KbVersion, Lead, Message
 from app.graph.state import MAX_MESSAGES, ChatState, new_state
 
 
@@ -82,6 +82,25 @@ def lead_upsert(conversation_id: uuid.UUID, state: ChatState):
     }
     stmt = insert(Lead).values(id=uuid.uuid4(), conversation_id=conversation_id, **values)
     return stmt.on_conflict_do_update(index_elements=[Lead.conversation_id], set_=values)
+
+
+async def latest_kb_hashes() -> dict[str, str]:
+    """The most recent fingerprint saved for each knowledge file."""
+    async with db_session() as db:
+        rows = await db.execute(
+            select(KbVersion.file, KbVersion.content_hash)
+            .distinct(KbVersion.file).order_by(KbVersion.file, KbVersion.synced_at.desc())
+        )
+        return {file: content_hash for file, content_hash in rows}
+
+
+async def record_kb_versions(hashes: dict[str, str]) -> None:
+    """Save a new fingerprint for each file that was written."""
+    if not hashes:
+        return
+    async with db_session() as db:
+        db.add_all(KbVersion(file=f, content_hash=h) for f, h in hashes.items())
+        await db.commit()
 
 
 async def mark_lead_notified(session_id: str) -> None:
