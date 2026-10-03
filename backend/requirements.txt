@@ -18,6 +18,10 @@ redis==8.1.0
 # HTTP client (also used by FastAPI's test client)
 httpx==0.28.1
 
+# AI models: Claude (main) and Mistral (fallback)
+anthropic==1.11.0
+mistralai==3.0.0
+
 # Website text extraction (knowledge sync)
 beautifulsoup4==4.15.0
 markdownify==1.2.3
