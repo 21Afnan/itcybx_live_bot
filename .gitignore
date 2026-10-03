@@ -40,3 +40,7 @@ ENV/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Documents
+docx/
+*.docx
