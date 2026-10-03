@@ -22,5 +22,11 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 20
     max_output_tokens: int = 400
 
+    # Contact buttons. A button is hidden while its link is empty.
+    calendly_url: str = ""
+    whatsapp_url: str = "https://wa.me/923104887999"
+    contact_email: str = "info@itcybx.co.uk"
+    contact_page_url: str = "https://itcybx.co.uk/contact/"
+
 
 settings = Settings()

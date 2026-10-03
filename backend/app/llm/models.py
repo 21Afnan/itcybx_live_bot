@@ -36,8 +36,17 @@ class Usage:
     fallback_used: bool = False
 
 
-async def claude_stream(system: str, messages: list[dict], usage: Usage) -> AsyncIterator[str]:
-    """Stream a reply from Claude, with the rules + knowledge cached."""
+async def claude_stream(
+    system: str, messages: list[dict], usage: Usage, instruction: str = ""
+) -> AsyncIterator[str]:
+    """Stream a reply from Claude, with the rules + knowledge cached.
+
+    `instruction` is this turn's note (e.g. "ask for their platform"). It is
+    sent as a system message after the visitor's message, so the cached
+    rules + knowledge block in front stays unchanged.
+    """
+    if instruction:
+        messages = [*messages, {"role": "system", "content": instruction}]
     client = anthropic.AsyncAnthropic(
         api_key=settings.anthropic_api_key.get_secret_value(),
         timeout=settings.llm_timeout_seconds,
@@ -63,8 +72,12 @@ async def claude_stream(system: str, messages: list[dict], usage: Usage) -> Asyn
     usage.tokens_out = final.usage.output_tokens
 
 
-async def mistral_stream(system: str, messages: list[dict], usage: Usage) -> AsyncIterator[str]:
+async def mistral_stream(
+    system: str, messages: list[dict], usage: Usage, instruction: str = ""
+) -> AsyncIterator[str]:
     """Stream a reply from Mistral (the fallback model)."""
+    if instruction:
+        system = f"{system}\n\n# Note for this reply\n{instruction}"
     client = Mistral(
         api_key=settings.mistral_api_key.get_secret_value(),
         timeout_ms=int(settings.llm_timeout_seconds * 1000),
@@ -86,11 +99,17 @@ async def mistral_stream(system: str, messages: list[dict], usage: Usage) -> Asy
 
 
 async def stream_reply(
-    question: str, language: str, history: list[dict], usage: Usage, force_fallback: bool = False
+    question: str,
+    language: str,
+    history: list[dict],
+    usage: Usage,
+    force_fallback: bool = False,
+    instruction: str = "",
 ) -> AsyncIterator[str]:
     """Stream the bot's reply to `question`, falling back to Mistral if needed.
 
     `history` is the earlier messages ({"role", "content"}), oldest first.
+    `instruction` is an optional note for this reply only.
     `usage` is filled in once the reply is complete.
     """
     system = system_text(question, language)
@@ -99,7 +118,7 @@ async def stream_reply(
     if not force_fallback:
         started = False
         try:
-            async for text in claude_stream(system, messages, usage):
+            async for text in claude_stream(system, messages, usage, instruction):
                 started = True
                 yield text
             return
@@ -109,10 +128,23 @@ async def stream_reply(
 
     usage.fallback_used = True
     try:
-        async for text in mistral_stream(system, messages, usage):
+        async for text in mistral_stream(system, messages, usage, instruction):
             yield text
     except Exception as e:
         raise LLMUnavailable("Mistral failed too") from e
+
+
+async def summarize(summary: str, messages: list[dict], language: str) -> str:
+    """Fold older messages into a short running summary (keeps prompts small)."""
+    transcript = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
+    question = (
+        "Update this summary of an earlier part of the chat with the messages below. "
+        "Keep facts about the visitor and their store. Max 80 words. Reply with the summary only.\n\n"
+        f"Summary so far: {summary or '(none)'}\n\nMessages:\n{transcript}"
+    )
+    usage = Usage()
+    parts = [t async for t in stream_reply(question, language, [], usage)]
+    return "".join(parts).strip()
 
 
 async def _cli(question: str, language: str, force_fallback: bool) -> None:

@@ -22,7 +22,7 @@ def collect(question="What is the Growth Audit?", **kwargs) -> tuple[str, Usage]
 def fake_model(name, chunks, fail_after=None):
     """A stand-in for claude_stream / mistral_stream."""
 
-    async def stream(system, messages, usage):
+    async def stream(system, messages, usage, instruction=""):
         assert "IT Cybx Assistant Rules" in system  # rules + knowledge always sent
         for i, chunk in enumerate(chunks):
             if fail_after is not None and i == fail_after:

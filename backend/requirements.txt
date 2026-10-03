@@ -18,6 +18,9 @@ redis==8.1.0
 # HTTP client (also used by FastAPI's test client)
 httpx==0.28.1
 
+# Bot flow
+langgraph==1.2.12
+
 # AI models: Claude (main) and Mistral (fallback)
 anthropic==1.11.0
 mistralai==3.0.0
