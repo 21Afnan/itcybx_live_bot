@@ -3,9 +3,10 @@
 import uuid
 
 from sqlalchemy import func, select, update
+from sqlalchemy.dialects.postgresql import insert
 
 from app.db.engine import db_session
-from app.db.models import Conversation, Message
+from app.db.models import Conversation, Lead, Message
 from app.graph.state import MAX_MESSAGES, ChatState, new_state
 
 
@@ -26,6 +27,7 @@ async def find_conversation(session_id: str) -> Conversation | None:
 async def rebuild_state(conversation: Conversation) -> ChatState:
     """Recreate the bot's memory from Supabase (used when Redis has forgotten it)."""
     async with db_session() as db:
+        lead = await db.scalar(select(Lead).where(Lead.conversation_id == conversation.id))
         rows = (await db.scalars(
             select(Message).where(Message.conversation_id == conversation.id)
             .order_by(Message.created_at.desc()).limit(MAX_MESSAGES)
@@ -37,6 +39,8 @@ async def rebuild_state(conversation: Conversation) -> ChatState:
         lead_status=conversation.lead_status,
         messages=[{"role": m.role, "content": m.content} for m in reversed(rows)],
     )
+    if lead:
+        state["lead"] = {f: getattr(lead, f) or "" for f in state["lead"]}
     if state["messages"] and state["messages"][0]["role"] != "user":
         state["messages"] = state["messages"][1:]  # history must start with the visitor
     return state
@@ -63,5 +67,28 @@ async def save_turn(state: ChatState, user_message: str, reply: str, usage: dict
                 last_message_at=func.now(),
             )
         )
+        if state.get("name"):
+            await db.execute(lead_upsert(conversation.id, state))
         await db.commit()
     return str(reply_id)
+
+
+def lead_upsert(conversation_id: uuid.UUID, state: ChatState):
+    """Insert or update the chat's lead (partial leads are kept too)."""
+    values = {
+        "name": state["name"],
+        **{f: state["lead"].get(f) or None for f in ("email", "whatsapp", "platform", "market", "store_url")},
+        "status": "complete" if state.get("lead_status") == "complete" else "partial",
+    }
+    stmt = insert(Lead).values(id=uuid.uuid4(), conversation_id=conversation_id, **values)
+    return stmt.on_conflict_do_update(index_elements=[Lead.conversation_id], set_=values)
+
+
+async def mark_lead_notified(session_id: str) -> None:
+    async with db_session() as db:
+        conversation = await db.scalar(
+            select(Conversation).where(Conversation.session_id == uuid.UUID(session_id))
+        )
+        await db.execute(update(Lead).where(Lead.conversation_id == conversation.id)
+                         .values(notified_at=func.now()))
+        await db.commit()

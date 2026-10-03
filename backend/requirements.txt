@@ -25,6 +25,9 @@ langgraph==1.2.12
 anthropic==1.11.0
 mistralai==3.0.0
 
+# Google Sheet lead alerts (service account sign-in)
+google-auth==2.59.1
+
 # Website text extraction (knowledge sync)
 beautifulsoup4==4.15.0
 markdownify==1.2.3

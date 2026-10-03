@@ -22,6 +22,15 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 20
     max_output_tokens: int = 400
 
+    # Lead alerts: email (Hostinger SMTP) and Google Sheet
+    smtp_host: str = ""
+    smtp_port: int = 465
+    smtp_user: str = ""
+    smtp_password: SecretStr = SecretStr("")
+    lead_email_to: str = "info@itcybx.co.uk"
+    google_sheet_id: str = ""
+    google_service_account_json: str = ""
+
     # Contact buttons. A button is hidden while its link is empty.
     calendly_url: str = ""
     whatsapp_url: str = "https://wa.me/923104887999"

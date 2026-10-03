@@ -21,6 +21,7 @@ from app.db import repo
 from app.db.engine import get_engine
 from app.graph.build import GREETING, run_turn
 from app.graph.state import new_state
+from app.leads.notify import notify_team
 
 CHECK_TIMEOUT_SECONDS = 10  # the first connection to Supabase can take a few seconds
 
@@ -89,7 +90,14 @@ def sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-running_turns: set[asyncio.Task] = set()  # keeps background turns alive until they finish
+running_turns: set[asyncio.Task] = set()  # keeps background work alive until it finishes
+
+
+def background(coro) -> None:
+    """Run work after the reply without making the visitor wait for it."""
+    task = asyncio.create_task(coro)
+    running_turns.add(task)
+    task.add_done_callback(running_turns.discard)
 
 
 async def process_turn(state: dict, message: str, out: asyncio.Queue) -> None:
@@ -122,6 +130,8 @@ async def process_turn(state: dict, message: str, out: asyncio.Queue) -> None:
                                               final.get("usage") or {})
         except Exception:
             log.exception("Could not save the message")  # the visitor already has the reply
+        if final.get("lead_just_completed"):
+            background(notify_team(final))
         out.put_nowait(sse("done", {"message_id": message_id,
                                     "lead_status": final.get("lead_status", "none")}))
     finally:
@@ -132,9 +142,7 @@ async def process_turn(state: dict, message: str, out: asyncio.Queue) -> None:
 async def reply_events(state: dict, message: str):
     """Stream the events of one turn to the visitor as they happen."""
     out: asyncio.Queue = asyncio.Queue()
-    task = asyncio.create_task(process_turn(state, message, out))
-    running_turns.add(task)
-    task.add_done_callback(running_turns.discard)
+    background(process_turn(state, message, out))
     while (item := await out.get()) is not None:
         yield item
 

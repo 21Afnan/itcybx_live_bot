@@ -56,7 +56,11 @@ def api(monkeypatch):
     monkeypatch.setattr(main.repo, "create_conversation", create_conversation)
     monkeypatch.setattr(main.repo, "find_conversation", find_conversation)
     monkeypatch.setattr(main.repo, "save_turn", save_turn)
+    async def notify_team(state):
+        saved.setdefault("alerts", []).append(state["lead"]["email"])
+
     monkeypatch.setattr(nodes, "stream_reply", fake_ai)
+    monkeypatch.setattr(main, "notify_team", notify_team)
     client = TestClient(main.app)
     client.redis, client.saved = redis, saved
     return client
@@ -116,6 +120,7 @@ def test_complete_lead_sends_actions_before_done(api, monkeypatch):
     assert names[-2:] == ["actions", "done"]
     assert got[-2][1]["buttons"][0]["type"] == "calendly"
     assert got[-1][1]["lead_status"] == "complete"
+    assert api.saved["alerts"] == ["sara@x.com"]  # team alerted once
 
 
 def test_unknown_session_is_404(api):
