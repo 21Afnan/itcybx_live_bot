@@ -1,4 +1,4 @@
-"""Tests for /health. They fake Postgres and Redis, so they run anywhere."""
+"""Tests for /health. They never touch the real Supabase or Redis."""
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,34 +14,37 @@ def fake(answer):
 
 
 @pytest.mark.parametrize(
-    "db_ok, redis_ok, code, status",
+    "db, redis, code, status",
     [
-        (True, True, 200, "ok"),
-        (False, True, 503, "degraded"),
-        (True, False, 503, "degraded"),
+        ("ok", "ok", 200, "ok"),
+        ("TimeoutError", "ok", 503, "degraded"),
+        ("ok", "ConnectionError", 503, "degraded"),
     ],
 )
-def test_health(monkeypatch, db_ok, redis_ok, code, status):
-    monkeypatch.setattr(main, "database_works", fake(db_ok))
-    monkeypatch.setattr(main, "redis_works", fake(redis_ok))
+def test_health(monkeypatch, db, redis, code, status):
+    monkeypatch.setattr(main, "database_status", fake(db))
+    monkeypatch.setattr(main, "redis_status", fake(redis))
 
     resp = TestClient(main.app).get("/health")
 
     assert resp.status_code == code
-    assert resp.json()["status"] == status
-    assert resp.json()["database"] == ("ok" if db_ok else "error")
-    assert resp.json()["redis"] == ("ok" if redis_ok else "error")
+    assert resp.json() == {"status": status, "db": db, "redis": redis}
 
 
-def test_health_says_error_when_services_are_down(monkeypatch):
-    """Point at addresses where nothing runs: both checks must say error."""
-    from redis.asyncio import Redis
-    from sqlalchemy.ext.asyncio import create_async_engine
-
-    monkeypatch.setattr(main, "database", create_async_engine("postgresql+asyncpg://x:y@127.0.0.1:1/z"))
-    monkeypatch.setattr(main, "redis", Redis.from_url("redis://127.0.0.1:1/0"))
+def test_wrong_database_url_is_reported_not_crashing(monkeypatch):
+    """A broken DATABASE_URL shows an error name and never leaks the URL."""
+    secret_url = "not-a-real-url-with-secret-password"
+    monkeypatch.setattr(main.settings, "database_url", secret_url)
+    monkeypatch.setattr(main.settings, "redis_url", "redis://127.0.0.1:1/0")
+    main.get_database.cache_clear()
+    main.get_redis.cache_clear()
 
     resp = TestClient(main.app).get("/health")
 
     assert resp.status_code == 503
-    assert resp.json() == {"status": "degraded", "database": "error", "redis": "error"}
+    assert resp.json()["db"] == "ArgumentError"
+    assert resp.json()["redis"] not in ("ok", "")
+    assert secret_url not in resp.text
+
+    main.get_database.cache_clear()
+    main.get_redis.cache_clear()
