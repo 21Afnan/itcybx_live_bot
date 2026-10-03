@@ -18,5 +18,9 @@ redis==8.1.0
 # HTTP client (also used by FastAPI's test client)
 httpx==0.28.1
 
+# Website text extraction (knowledge sync)
+beautifulsoup4==4.15.0
+markdownify==1.2.3
+
 # Tests
 pytest==9.1.1
