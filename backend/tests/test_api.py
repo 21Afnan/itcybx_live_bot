@@ -193,3 +193,15 @@ def test_rate_limit_message_is_in_arabic_for_arabic_chats(api):
     api.redis.data[f"ratelimit:chat:session:{sid}"] = 20
     resp = api.post("/chat", json={"session_id": sid, "message": "مرحبا"})
     assert events(resp)[0][1]["message"].startswith("ترسل الرسائل")
+
+
+# ---- Step 9: widget -----------------------------------------------------
+
+
+def test_widget_is_served_as_javascript(api):
+    resp = api.get("/widget.js")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("application/javascript")
+    assert len(resp.content) < 30_000  # PLAN.md: under 30 KB
+    assert "attachShadow" in resp.text  # isolated from the site's CSS
+    assert ".innerHTML = ICON" in resp.text and resp.text.count("innerHTML") == 1  # never model text

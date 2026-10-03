@@ -2,6 +2,7 @@
 
     POST /session   start or resume a chat
     POST /chat      send a message; the reply streams back (Server-Sent Events)
+    GET  /widget.js the chat widget for the website
     GET  /health    are Supabase and Redis working?
 """
 
@@ -9,11 +10,12 @@ import asyncio
 import json
 import logging
 import uuid
+from pathlib import Path
 from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -213,6 +215,18 @@ async def chat(body: ChatRequest, request: Request):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# ---- /widget.js ----------------------------------------------------------
+
+WIDGET_FILE = Path(__file__).resolve().parents[2] / "widget" / "widget.js"  # /widget in Docker
+
+
+@app.get("/widget.js")
+async def widget():
+    """The chat widget the website loads with one script tag."""
+    return FileResponse(WIDGET_FILE, media_type="application/javascript",
+                        headers={"Cache-Control": "public, max-age=300"})
 
 
 # ---- /health ------------------------------------------------------------

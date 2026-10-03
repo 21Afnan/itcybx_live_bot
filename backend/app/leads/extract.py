@@ -59,7 +59,14 @@ class Found:
 
 
 def valid_name(name: str) -> bool:
-    return 2 <= len(name.strip()) <= 60
+    """2-60 characters, and looks like a name rather than a question or contact detail."""
+    name = name.strip()
+    return (
+        2 <= len(name) <= 60
+        and len(name.split()) <= 4
+        and not any(ch in name for ch in "?؟@/:")
+        and not any(ch.isdigit() for ch in name)
+    )
 
 
 def clean_name(text: str) -> str:

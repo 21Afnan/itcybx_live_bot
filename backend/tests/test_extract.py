@@ -43,6 +43,10 @@ def test_names():
     assert clean_name("hi, I'm Omar") == "Omar"
     assert clean_name("اسمي سارة") == "سارة"
     assert valid_name("Al") and not valid_name("A") and not valid_name("x" * 61)
+    assert valid_name("Mary Ann Smith")
+    for not_a_name in ["How much is the audit?", "كم السعر؟", "sara@x.com", "+966501234567",
+                       "I want to grow my online store fast"]:
+        assert not valid_name(not_a_name), not_a_name
 
 
 def test_interest_and_contact_signals():
