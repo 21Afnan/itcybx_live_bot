@@ -35,5 +35,8 @@ google-auth==2.59.1
 beautifulsoup4==4.15.0
 markdownify==1.2.3
 
+# Eval questions file
+pyyaml==6.0.3
+
 # Tests
 pytest==9.1.1
