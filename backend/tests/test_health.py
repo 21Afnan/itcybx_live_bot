@@ -3,7 +3,8 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from app import main
+from app import main, sessions
+from app.db import engine
 
 
 def fake(answer):
@@ -34,10 +35,10 @@ def test_health(monkeypatch, db, redis, code, status):
 def test_wrong_database_url_is_reported_not_crashing(monkeypatch):
     """A broken DATABASE_URL shows an error name and never leaks the URL."""
     secret_url = "not-a-real-url-with-secret-password"
-    monkeypatch.setattr(main.settings, "database_url", secret_url)
-    monkeypatch.setattr(main.settings, "redis_url", "redis://127.0.0.1:1/0")
-    main.get_database.cache_clear()
-    main.get_redis.cache_clear()
+    monkeypatch.setattr(engine.settings, "database_url", secret_url)
+    monkeypatch.setattr(sessions.settings, "redis_url", "redis://127.0.0.1:1/0")
+    engine.get_engine.cache_clear()
+    sessions.get_redis.cache_clear()
 
     resp = TestClient(main.app).get("/health")
 
@@ -46,5 +47,5 @@ def test_wrong_database_url_is_reported_not_crashing(monkeypatch):
     assert resp.json()["redis"] not in ("ok", "")
     assert secret_url not in resp.text
 
-    main.get_database.cache_clear()
-    main.get_redis.cache_clear()
+    engine.get_engine.cache_clear()
+    sessions.get_redis.cache_clear()
