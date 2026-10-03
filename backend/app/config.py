@@ -10,6 +10,12 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     app_env: str = "development"
+    allowed_origins: str = "https://itcybx.co.uk"  # comma-separated
+
+    # Abuse limits
+    rate_limit_messages: int = 20
+    rate_limit_window_seconds: int = 600
+    max_message_chars: int = 500
     database_url: str  # Supabase connection string, required
     redis_url: str = "redis://redis:6379/0"
     site_base_url: str = "https://itcybx.co.uk"
@@ -36,6 +42,10 @@ class Settings(BaseSettings):
     whatsapp_url: str = "https://wa.me/923104887999"
     contact_email: str = "info@itcybx.co.uk"
     contact_page_url: str = "https://itcybx.co.uk/contact/"
+
+    @property
+    def allowed_origins_list(self) -> list[str]:
+        return [o.strip().rstrip("/") for o in self.allowed_origins.split(",") if o.strip()]
 
 
 settings = Settings()

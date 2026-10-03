@@ -30,6 +30,13 @@ class FakeRedis:
     async def delete(self, key):
         self.data.pop(key, None)
 
+    async def incr(self, key):
+        self.data[key] = int(self.data.get(key, 0)) + 1
+        return self.data[key]
+
+    async def expire(self, key, seconds):
+        return True
+
 
 @pytest.fixture
 def api(monkeypatch):
@@ -145,3 +152,44 @@ def test_lock_is_released_after_reply(api):
     sid = api.post("/session", json={"language": "en"}).json()["session_id"]
     api.post("/chat", json={"session_id": sid, "message": "Sara"})
     assert f"chat:lock:{sid}" not in api.redis.data
+
+
+# ---- Step 8: security ----------------------------------------------------
+
+
+def test_other_websites_are_rejected(api):
+    resp = api.post("/session", json={"language": "en"}, headers={"Origin": "https://evil.com"})
+    assert resp.status_code == 403
+
+
+def test_itcybx_website_is_allowed(api, monkeypatch):
+    monkeypatch.setattr(main.settings, "allowed_origins", "https://itcybx.co.uk,http://localhost:8080")
+    resp = api.post("/session", json={"language": "en"}, headers={"Origin": "https://itcybx.co.uk"})
+    assert resp.status_code == 200
+    assert resp.headers["access-control-allow-origin"] == "https://itcybx.co.uk"
+
+
+def test_message_over_500_characters_is_too_long(api):
+    sid = api.post("/session", json={"language": "en"}).json()["session_id"]
+    resp = api.post("/chat", json={"session_id": sid, "message": "x" * 501})
+    assert resp.status_code == 400
+    assert events(resp) == [("error", {"code": "too_long", "message":
+                             "That message is too long. Please keep it under 500 characters."})]
+    assert api.post("/chat", json={"session_id": sid, "message": "x" * 500}).status_code == 200
+
+
+def test_21st_message_in_10_minutes_is_rate_limited(api):
+    sid = api.post("/session", json={"language": "en"}).json()["session_id"]
+    codes = [api.post("/chat", json={"session_id": sid, "message": "hi there"}).status_code
+             for _ in range(21)]
+    assert codes[:20] == [200] * 20
+    resp = api.post("/chat", json={"session_id": sid, "message": "hi there"})
+    assert resp.status_code == 429
+    assert events(resp)[0][1]["code"] == "rate_limited"
+
+
+def test_rate_limit_message_is_in_arabic_for_arabic_chats(api):
+    sid = api.post("/session", json={"language": "ar"}).json()["session_id"]
+    api.redis.data[f"ratelimit:chat:session:{sid}"] = 20
+    resp = api.post("/chat", json={"session_id": sid, "message": "مرحبا"})
+    assert events(resp)[0][1]["message"].startswith("ترسل الرسائل")

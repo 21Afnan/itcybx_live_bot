@@ -11,17 +11,20 @@ import logging
 import uuid
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 from app import sessions
 from app.db import repo
+from app.config import settings
 from app.db.engine import get_engine
 from app.graph.build import GREETING, run_turn
 from app.graph.state import new_state
 from app.leads.notify import notify_team
+from app.security import ratelimit
 
 CHECK_TIMEOUT_SECONDS = 10  # the first connection to Supabase can take a few seconds
 
@@ -35,8 +38,47 @@ UNAVAILABLE = {
     "ar": "حدث خطأ. يمكنك التواصل معنا عبر واتساب أو البريد الإلكتروني.",
 }
 
+TOO_FAST = {
+    "en": "You're sending messages too fast. Please wait a moment.",
+    "ar": "ترسل الرسائل بسرعة كبيرة. يرجى الانتظار قليلًا.",
+}
+TOO_LONG = {
+    "en": "That message is too long. Please keep it under {n} characters.",
+    "ar": "الرسالة طويلة جدًا. يرجى ألا تتجاوز {n} حرفًا.",
+}
+
 log = logging.getLogger("chatbot")
 app = FastAPI(title="IT Cybx Chatbot")
+
+# Browsers on itcybx.co.uk may call the API; the check below rejects the rest.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.allowed_origins_list,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+)
+
+
+def allowed_origin(request: Request) -> None:
+    """403 for calls from any other website (PLAN.md → "CORS").
+
+    Requests without an Origin header (curl, uptime monitors) are not from a
+    browser on another site, so they pass; the rate limits still apply.
+    """
+    origin = request.headers.get("origin")
+    if origin and origin.rstrip("/") not in settings.allowed_origins_list:
+        raise HTTPException(403, "Origin not allowed")
+
+
+def client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def sse_error(status: int, code: str, message: str) -> Response:
+    """An error as both an HTTP status and an SSE `error` event, so the widget
+    can treat it like any other reply."""
+    return Response(sse("error", {"code": code, "message": message}), status_code=status,
+                    media_type="text/event-stream")
 
 
 # ---- /session -----------------------------------------------------------
@@ -60,9 +102,11 @@ async def load_state(session_id: str):
     return state
 
 
-@app.post("/session")
-async def start_session(body: SessionRequest):
+@app.post("/session", dependencies=[Depends(allowed_origin)])
+async def start_session(body: SessionRequest, request: Request):
     """Resume the visitor's chat if we know it, otherwise start a new one."""
+    if not await ratelimit.allow(f"session:ip:{client_ip(request)}"):
+        raise HTTPException(429, TOO_FAST[body.language])
     if body.session_id:
         state = await load_state(str(body.session_id))
         if state:
@@ -147,8 +191,8 @@ async def reply_events(state: dict, message: str):
         yield item
 
 
-@app.post("/chat")
-async def chat(body: ChatRequest):
+@app.post("/chat", dependencies=[Depends(allowed_origin)])
+async def chat(body: ChatRequest, request: Request):
     """Send one message. The reply streams back word by word."""
     message = body.message.strip()
     if not message:
@@ -156,6 +200,12 @@ async def chat(body: ChatRequest):
     state = await load_state(str(body.session_id))
     if state is None:
         raise HTTPException(404, "Unknown session_id")
+    language = state["language"]
+    if len(message) > settings.max_message_chars:
+        return sse_error(400, "too_long", TOO_LONG[language].format(n=settings.max_message_chars))
+    if not (await ratelimit.allow(f"chat:ip:{client_ip(request)}")
+            and await ratelimit.allow(f"chat:session:{state['session_id']}")):
+        return sse_error(429, "rate_limited", TOO_FAST[language])
     if not await sessions.lock(state["session_id"]):
         raise HTTPException(429, "Please wait for the current reply")
     return StreamingResponse(
