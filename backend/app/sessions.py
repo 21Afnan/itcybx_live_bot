@@ -15,7 +15,7 @@ from app.graph.state import ChatState
 STATE_TTL_SECONDS = 7 * 24 * 3600
 LOCK_SECONDS = 60
 SAVED_FIELDS = ["session_id", "language", "name", "messages", "summary", "lead",
-                "lead_status", "capture_asks"]
+                "lead_status", "capture_asks", "qualify_asked", "last_step"]
 
 
 @lru_cache

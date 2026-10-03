@@ -107,9 +107,15 @@ def next_step(state: ChatState) -> str:
         return "capture_lead"
     if state.get("wants_contact") or (state.get("interest_signal") and not complete):
         return "contact"  # asked twice already: respect it, just show the options
-    if any(not state["lead"].get(f) for f in QUALIFY_FIELDS):
-        return "qualify"
+    if next_qualify_field(state) and state.get("last_step") != "qualify":
+        return "qualify"  # never two replies in a row, never the same question twice
     return "answer"
+
+
+def next_qualify_field(state: ChatState) -> str | None:
+    """The first detail we still don't know and haven't asked about yet."""
+    asked = state.get("qualify_asked") or []
+    return next((f for f in QUALIFY_FIELDS if not state["lead"].get(f) and f not in asked), None)
 
 
 # ---- greet --------------------------------------------------------------
@@ -142,11 +148,13 @@ async def greet(state: ChatState, writer: StreamWriter) -> dict:
 
 
 def qualify(state: ChatState) -> dict:
-    """Ask for the next missing detail: platform, then market, then store URL."""
-    missing = next(f for f in QUALIFY_FIELDS if not state["lead"].get(f))
+    """Ask once for the next missing detail: platform, then market, then store URL."""
+    missing = next_qualify_field(state)
     return {
         "instruction": f"After answering, ask ONE short, natural question to learn "
-        f"{QUALIFY_QUESTIONS[missing]}. Ask nothing else."
+        f"{QUALIFY_QUESTIONS[missing]}. Ask nothing else.",
+        "qualify_asked": [*(state.get("qualify_asked") or []), missing],
+        "last_step": "qualify",
     }
 
 
@@ -165,7 +173,8 @@ def capture_lead(state: ChatState) -> dict:
             f"{' and '.join(missing)} so the team can send them a Growth Audit plan. "
             f"Explain why in one short sentence. If they don't want to share it, that's fine."
         )
-    return {"instruction": note, "capture_asks": state.get("capture_asks", 0) + 1}
+    return {"instruction": note, "capture_asks": state.get("capture_asks", 0) + 1,
+            "last_step": "capture_lead"}
 
 
 def contact(state: ChatState) -> dict:
@@ -182,7 +191,7 @@ def contact(state: ChatState) -> dict:
             "contact page. Buttons with these links appear below your reply, so don't "
             "write the links out."
         )
-    return {"instruction": note, "actions": contact_buttons(state)}
+    return {"instruction": note, "actions": contact_buttons(state), "last_step": "contact"}
 
 
 # ---- answer -------------------------------------------------------------
@@ -199,7 +208,11 @@ def known_details(state: ChatState) -> str:
 
 async def answer(state: ChatState, writer: StreamWriter) -> dict:
     """Write the reply with the AI, streaming each piece as it arrives."""
-    instruction = "\n".join(filter(None, [known_details(state), state.get("instruction", "")]))
+    note = state.get("instruction", "")
+    if not note:  # a plain answer: no follow-up questions about their store
+        note = ("Do not ask about their platform, market or store website in this reply. "
+                "Don't end with a question unless something they said is unclear.")
+    instruction = "\n".join([known_details(state), note])
     usage = Usage()
     parts = []
     try:
@@ -228,4 +241,6 @@ async def answer(state: ChatState, writer: StreamWriter) -> dict:
             pass  # keep the old summary; trimming still happens
         messages = messages[cut:]
 
-    return {"reply": reply, "messages": messages, "summary": summary, "usage": usage.__dict__}
+    last = state.get("last_step") if state.get("instruction") else "answer"
+    return {"reply": reply, "messages": messages, "summary": summary, "usage": usage.__dict__,
+            "last_step": last}

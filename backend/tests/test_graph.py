@@ -105,3 +105,26 @@ def test_arabic_greeting(fake_ai):
     state, events = turn(new_state("s1", "ar"), "اسمي سارة")
     assert state["name"] == "سارة"
     assert events[0]["text"].startswith("تشرفنا يا سارة")
+
+
+def test_platform_question_is_asked_only_once(fake_ai):
+    state, _ = turn(new_state("s1", "en"), "Sara")
+    state, _ = turn(state, "What do you do?")  # asks platform
+    assert "e-commerce platform" in fake_ai[-1]["instruction"]
+    state, _ = turn(state, "What about your process?")  # visitor ignored it: rest turn
+    assert "Do not ask about their platform" in fake_ai[-1]["instruction"]
+    state, _ = turn(state, "And case studies?")  # next detail, never platform again
+    assert "main market" in fake_ai[-1]["instruction"]
+    for question in ["Refunds?", "Who founded you?", "Contact?", "Anything else?"]:
+        state, _ = turn(state, question)
+        assert "e-commerce platform" not in fake_ai[-1]["instruction"]
+
+
+def test_no_store_questions_two_replies_in_a_row(fake_ai):
+    state, _ = turn(new_state("s1", "en"), "Sara")
+    asked = []
+    for question in ["Q1?", "Q2?", "Q3?", "Q4?", "Q5?", "Q6?", "Q7?"]:
+        state, _ = turn(state, question)
+        asked.append("After answering, ask ONE" in fake_ai[-1]["instruction"])
+    # platform, rest, market, rest, store URL, then never again
+    assert asked == [True, False, True, False, True, False, False]

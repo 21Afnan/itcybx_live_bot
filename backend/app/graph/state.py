@@ -17,6 +17,8 @@ class ChatState(TypedDict, total=False):
     lead: dict  # email, whatsapp, platform, market, store_url
     lead_status: str  # "none", "partial" or "complete"
     capture_asks: int  # times we asked for email + WhatsApp
+    qualify_asked: list[str]  # qualify fields already asked once (never asked again)
+    last_step: str  # the step used for the previous reply
 
     # This turn only
     user_message: str
@@ -41,4 +43,6 @@ def new_state(session_id: str, language: str) -> ChatState:
         lead={field: "" for field in LEAD_FIELDS},
         lead_status="none",
         capture_asks=0,
+        qualify_asked=[],
+        last_step="",
     )
