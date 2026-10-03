@@ -106,3 +106,19 @@ def test_system_prompt_is_marked_for_caching():
 def test_fallback_model_gets_the_key_rules_repeated_at_the_end():
     assert "NO public price" in models.FALLBACK_REMINDER
     assert '"agency"' in models.FALLBACK_REMINDER
+
+
+def test_mistral_can_be_the_main_model(monkeypatch):
+    monkeypatch.setattr(models.settings, "llm_primary", "mistral")
+    monkeypatch.setattr(models, "claude_stream", fake_model("claude", ["Backup."]))
+    monkeypatch.setattr(models, "mistral_stream", fake_model("mistral", ["Main."]))
+    text, usage = collect()
+    assert (text, usage.model_used, usage.fallback_used) == ("Main.", "mistral", False)
+
+
+def test_claude_backs_up_mistral(monkeypatch):
+    monkeypatch.setattr(models.settings, "llm_primary", "mistral")
+    monkeypatch.setattr(models, "mistral_stream", fake_model("mistral", [], fail_after=0))
+    monkeypatch.setattr(models, "claude_stream", fake_model("claude", ["Backup."]))
+    text, usage = collect()
+    assert (text, usage.model_used, usage.fallback_used) == ("Backup.", "claude", True)

@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     sync_cron: str = "0 3 * * 1"  # weekly website check: Monday 03:00 UTC
 
     # AI models. SecretStr keeps keys out of logs and error messages.
+    llm_primary: str = "claude"  # "claude" or "mistral"; the other is the fallback
     anthropic_api_key: SecretStr = SecretStr("")
     anthropic_model: str = "claude-sonnet-5-5"
     mistral_api_key: SecretStr = SecretStr("")

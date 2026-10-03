@@ -1,4 +1,4 @@
-"""Talks to the AI models: Claude first, Mistral if Claude fails.
+"""Talks to the AI models: the main one (LLM_PRIMARY), the other if it fails.
 
     python -m app.llm.models --test "What is the Growth Audit?"
     python -m app.llm.models --test "What is the Growth Audit?" --force-fallback
@@ -18,6 +18,7 @@ import anthropic
 from mistralai.client import Mistral
 
 from app.config import settings
+from app.knowledge.loader import KNOWLEDGE_DIR
 from app.llm.prompts import claude_system, system_text
 
 
@@ -84,12 +85,14 @@ async def claude_stream(
 async def mistral_stream(
     system: str, messages: list[dict], usage: Usage, instruction: str = ""
 ) -> AsyncIterator[str]:
-    """Stream a reply from Mistral (the fallback model).
+    """Stream a reply from Mistral.
 
-    The smaller fallback model tends to forget rules placed before a long
-    knowledge block, so the most important ones are repeated at the end.
+    Smaller models tend to forget rules placed before a long knowledge
+    block, so the full rules and the most important ones are repeated
+    after it (the last instructions are the ones they follow best).
     """
-    system = f"{system}\n\n{FALLBACK_REMINDER}"
+    rules = (KNOWLEDGE_DIR / "rules.md").read_text(encoding="utf-8").strip()
+    system = f"{system}\n\n---\n\n{rules}\n\n{FALLBACK_REMINDER}"
     if instruction:
         system = f"{system}\n\n# Note for this reply\n{instruction}"
     client = Mistral(
@@ -120,32 +123,38 @@ async def stream_reply(
     force_fallback: bool = False,
     instruction: str = "",
 ) -> AsyncIterator[str]:
-    """Stream the bot's reply to `question`, falling back to Mistral if needed.
+    """Stream the bot's reply to `question`, falling back to the other model if needed.
 
+    LLM_PRIMARY in .env picks the main model ("claude" or "mistral"); the
+    other one is the fallback. `force_fallback` skips the main model.
     `history` is the earlier messages ({"role", "content"}), oldest first.
     `instruction` is an optional note for this reply only.
     `usage` is filled in once the reply is complete.
     """
     system = system_text(question, language)
     messages = [*history, {"role": "user", "content": question}]
+    primary, fallback = (
+        (mistral_stream, claude_stream) if settings.llm_primary == "mistral"
+        else (claude_stream, mistral_stream)
+    )
 
     if not force_fallback:
         started = False
         try:
-            async for text in claude_stream(system, messages, usage, instruction):
+            async for text in primary(system, messages, usage, instruction):
                 started = True
                 yield text
             return
         except Exception:
             if started:  # half a reply already went out: don't start a second one
-                raise LLMUnavailable("Claude stopped mid-reply")
+                raise LLMUnavailable("The main model stopped mid-reply")
 
     usage.fallback_used = True
     try:
-        async for text in mistral_stream(system, messages, usage, instruction):
+        async for text in fallback(system, messages, usage, instruction):
             yield text
     except Exception as e:
-        raise LLMUnavailable("Mistral failed too") from e
+        raise LLMUnavailable("The fallback model failed too") from e
 
 
 async def summarize(summary: str, messages: list[dict], language: str) -> str:
