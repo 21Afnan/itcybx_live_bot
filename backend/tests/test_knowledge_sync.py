@@ -109,45 +109,48 @@ def test_download_site_names_one_file_per_page(monkeypatch):
 
 
 def first_sync(tmp_path):
-    """Knowledge folder after a first sync of two pages; returns (pages, stored hashes)."""
+    """Knowledge folder after a first sync of two pages; returns the pages."""
     (tmp_path / "rules.md").write_text("my rules", encoding="utf-8")
     pages = {"en/pricing.md": "price v1", "en/about.md": "about v1"}
-    result = sync.apply_changes(pages, {}, tmp_path)
+    result = sync.apply_changes(pages, tmp_path)
     assert result.added == ["en/about.md", "en/pricing.md"]
-    return pages, {n: sync.fingerprint(t) for n, t in pages.items()}
+    return pages
 
 
 def test_second_sync_with_no_site_change_changes_nothing(tmp_path):
-    pages, stored = first_sync(tmp_path)
-    result = sync.apply_changes(pages, stored, tmp_path)
+    pages = first_sync(tmp_path)
+    result = sync.apply_changes(pages, tmp_path)
     assert not result.any
     assert result.backup is None
 
 
 def test_changed_page_is_updated_and_old_version_kept(tmp_path):
-    pages, stored = first_sync(tmp_path)
-    result = sync.apply_changes({**pages, "en/pricing.md": "price v2"}, stored, tmp_path)
+    pages = first_sync(tmp_path)
+    result = sync.apply_changes({**pages, "en/pricing.md": "price v2"}, tmp_path)
     assert result.changed == ["en/pricing.md"] and not result.added
     assert (tmp_path / "en/pricing.md").read_text(encoding="utf-8") == "price v2"
     assert (result.backup / "en/pricing.md").read_text(encoding="utf-8") == "price v1"
 
 
-def test_edited_stored_hash_triggers_update(tmp_path):
-    pages, stored = first_sync(tmp_path)
-    result = sync.apply_changes(pages, {**stored, "en/about.md": "edited"}, tmp_path)
+def test_older_file_on_disk_is_refreshed_even_if_the_site_did_not_change(tmp_path):
+    # A redeploy brought back an older file than the last sync wrote.
+    pages = first_sync(tmp_path)
+    (tmp_path / "en/about.md").write_text("about v0 (from the old image)", encoding="utf-8")
+    result = sync.apply_changes(pages, tmp_path)
     assert result.changed == ["en/about.md"]
+    assert (tmp_path / "en/about.md").read_text(encoding="utf-8") == "about v1"
 
 
 def test_removed_page_is_deleted_and_backed_up(tmp_path):
-    pages, stored = first_sync(tmp_path)
-    result = sync.apply_changes({"en/pricing.md": "price v1"}, stored, tmp_path)
+    pages = first_sync(tmp_path)
+    result = sync.apply_changes({"en/pricing.md": "price v1"}, tmp_path)
     assert result.removed == ["en/about.md"]
     assert not (tmp_path / "en/about.md").exists()
 
 
 def test_rollback_restores_previous_version(tmp_path):
-    pages, stored = first_sync(tmp_path)
-    sync.apply_changes({"en/pricing.md": "price v2", "en/new.md": "new page"}, stored, tmp_path)
+    pages = first_sync(tmp_path)
+    sync.apply_changes({"en/pricing.md": "price v2", "en/new.md": "new page"}, tmp_path)
 
     restored = sync.rollback(tmp_path)
 
@@ -158,8 +161,8 @@ def test_rollback_restores_previous_version(tmp_path):
 
 
 def test_sync_never_touches_rules(tmp_path):
-    pages, stored = first_sync(tmp_path)
-    sync.apply_changes({"en/pricing.md": "price v2"}, stored, tmp_path)
+    pages = first_sync(tmp_path)
+    sync.apply_changes({"en/pricing.md": "price v2"}, tmp_path)
     sync.rollback(tmp_path)
     assert (tmp_path / "rules.md").read_text(encoding="utf-8") == "my rules"
 

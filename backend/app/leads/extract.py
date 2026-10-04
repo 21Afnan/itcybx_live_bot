@@ -40,6 +40,20 @@ INTEREST_WORDS = [
     "سعر", "الأسعار", "تكلفة", "كم", "تقييم", "حجز", "احجز", "تواصل", "اتصال", "مكالمة", "شخص",
 ]
 
+# Words that show a number in the message is meant as a phone number.
+PHONE_WORDS = [
+    "whatsapp", "phone", "number", "mobile", "cell", "call me", "text me", "reach me",
+    "واتساب", "رقم", "جوال", "هاتف", "موبايل",
+]
+
+# Greetings and filler that are not a name ("Hello there", "ok", "السلام عليكم").
+NOT_NAME_WORDS = {
+    "hi", "hello", "hey", "there", "salam", "salaam", "assalam", "assalamualaikum", "o", "alaikum",
+    "good", "morning", "afternoon", "evening", "yes", "no", "ok", "okay", "sure", "thanks",
+    "thank", "you", "help", "test", "price", "pricing",
+    "مرحبا", "أهلا", "اهلا", "السلام", "عليكم", "نعم", "لا", "شكرا",
+}
+
 CONTACT_WORDS = [
     "talk to", "speak to", "call me", "contact", "someone", "person", "human", "whatsapp",
     "email you", "book", "تواصل", "اتصال", "مكالمة", "شخص", "واتساب",
@@ -66,6 +80,7 @@ def valid_name(name: str) -> bool:
         and len(name.split()) <= 4
         and not any(ch in name for ch in "?؟@/:")
         and not any(ch.isdigit() for ch in name)
+        and not all(word in NOT_NAME_WORDS for word in name.lower().split())
     )
 
 
@@ -86,22 +101,36 @@ def normalise_phone(raw: str) -> str:
     return ("+" + digits) if raw.strip().startswith("+") else digits
 
 
-def find(text: str) -> Found:
-    """Look for email, WhatsApp, platform, market and store URL in a message."""
+def find(text: str, expecting_phone: bool = False) -> Found:
+    """Look for email, WhatsApp, platform, market and store URL in a message.
+
+    A number without a country code is only flagged when it is meant as a
+    phone number: the bot just asked for one, or the message says so.
+    Otherwise "we do 10000000 a year" would be taken for a phone number.
+    """
     found = Found()
-    lower = text.lower()
 
     emails = EMAIL.findall(text)
     if emails:
         found.email = emails[0].lower()
 
     without_emails = EMAIL.sub(" ", text)
-    for match in PHONE.findall(without_emails):
+    match = URL_WITH_SCHEME.search(without_emails) or URL_BARE.search(without_emails)
+    if match:
+        url = match.group(0).rstrip(".,)")
+        found.store_url = url if url.lower().startswith("http") else "https://" + url
+
+    # Phone, platform and market are looked for outside emails and links, so
+    # "mystore.co.uk" does not mean the market is the UK.
+    plain = URL_BARE.sub(" ", URL_WITH_SCHEME.sub(" ", without_emails))
+    lower = plain.lower()
+    expecting_phone = expecting_phone or mentions(lower, PHONE_WORDS)
+    for match in PHONE.findall(plain):
         number = normalise_phone(match)
         if E164.match(number):
             found.whatsapp = number
             break
-        if len(re.sub(r"\D", "", number)) >= 7:
+        if expecting_phone and len(re.sub(r"\D", "", number)) >= 7:
             found.problems.append("whatsapp_needs_country_code")
 
     for word, platform in PLATFORMS.items():
@@ -113,11 +142,6 @@ def find(text: str) -> Found:
         if mentions(lower, [word]):
             found.market = market
             break
-
-    match = URL_WITH_SCHEME.search(without_emails) or URL_BARE.search(without_emails)
-    if match:
-        url = match.group(0).rstrip(".,)")
-        found.store_url = url if url.lower().startswith("http") else "https://" + url
 
     return found
 

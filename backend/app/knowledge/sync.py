@@ -14,7 +14,8 @@
    pages are updated, the old files are kept in knowledge/.history/ for
    rollback, and the team gets an email listing the changes.
 
-The same check runs every week on SYNC_CRON (see start_scheduler).
+The same check runs every week on SYNC_CRON, and once at start-up in
+production (see app/jobs.py).
 knowledge/rules.md is never touched here.
 """
 
@@ -187,18 +188,19 @@ def local_files(knowledge_dir: Path) -> set[str]:
     return {f"{lang}/{p.name}" for lang in LANGUAGES for p in (knowledge_dir / lang).glob("*.md")}
 
 
-def apply_changes(pages: dict[str, str], stored: dict[str, str], knowledge_dir: Path) -> SyncResult:
+def apply_changes(pages: dict[str, str], knowledge_dir: Path) -> SyncResult:
     """Write new/changed pages, delete removed ones, back up what is replaced.
 
-    `stored` is the last fingerprint per file (from kb_versions). A page whose
-    fingerprint matches, and whose file exists, is left alone.
+    Each page is compared with the file the bot actually reads, not with the
+    last saved fingerprint: after a redeploy the image can hold older files
+    than kb_versions remembers, and those must be refreshed too.
     """
     result = SyncResult()
     existing = local_files(knowledge_dir)
     for name, markdown in sorted(pages.items()):
         if name not in existing:
             result.added.append(name)
-        elif stored.get(name) != fingerprint(markdown):
+        elif (knowledge_dir / name).read_text(encoding="utf-8") != markdown:
             result.changed.append(name)
     result.removed = sorted(existing - set(pages))
     if not result.any:
@@ -272,8 +274,7 @@ async def sync(knowledge_dir: Path = KNOWLEDGE_DIR, client: httpx.Client | None 
 
     pages = await asyncio.to_thread(download_site, client)
     check_site(pages, knowledge_dir)
-    stored = await repo.latest_kb_hashes()
-    result = apply_changes(pages, stored, knowledge_dir)
+    result = apply_changes(pages, knowledge_dir)
     if result.any:
         await repo.record_kb_versions(
             {name: fingerprint(pages[name]) for name in result.added + result.changed}
@@ -286,7 +287,7 @@ async def sync(knowledge_dir: Path = KNOWLEDGE_DIR, client: httpx.Client | None 
     return result
 
 
-# ---- weekly schedule ----------------------------------------------------
+# ---- schedule (see app/jobs.py) -----------------------------------------
 
 
 def cron_trigger(expression: str):
@@ -304,37 +305,25 @@ def cron_trigger(expression: str):
                        day_of_week=weekday, timezone="UTC")
 
 
-def start_scheduler():
-    """Run the website check on SYNC_CRON inside the API process."""
-    from apscheduler.schedulers.asyncio import AsyncIOScheduler
-
-    async def weekly():
+async def scheduled_sync(notify: bool = True) -> None:
+    """The sync as a background job: never raises, tells the team if the site looks broken."""
+    try:
+        result = await sync(notify=notify)
+    except SiteLooksWrong as e:
+        log.error("Website sync stopped, nothing changed: %s", e)
         try:
-            result = await sync()
-        except SiteLooksWrong as e:
-            log.error("Weekly sync stopped, nothing changed: %s", e)
-            try:
-                from app.leads.notify import send_text_email
-                await send_text_email("Chatbot weekly website check stopped",
-                                      f"Nothing was changed because {e}.\n"
-                                      "Please check the website and its sitemap.")
-            except Exception:
-                pass
-            return
+            from app.leads.notify import send_text_email
+            await send_text_email("Chatbot weekly website check stopped",
+                                  f"Nothing was changed because {e}.\n"
+                                  "Please check the website and its sitemap.")
         except Exception:
-            log.exception("Weekly sync failed")
-            return
-        try:
-            log.info("Weekly sync: %d added, %d changed, %d removed",
-                     len(result.added), len(result.changed), len(result.removed))
-        except Exception:
-            log.exception("Weekly sync failed")
-
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(weekly, cron_trigger(settings.sync_cron), id="weekly-sync",
-                      max_instances=1, coalesce=True)
-    scheduler.start()
-    return scheduler
+            pass
+        return
+    except Exception:
+        log.exception("Website sync failed")
+        return
+    log.info("Website sync: %d added, %d changed, %d removed",
+             len(result.added), len(result.changed), len(result.removed))
 
 
 # ---- command line -------------------------------------------------------

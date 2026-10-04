@@ -17,6 +17,7 @@ LLMUnavailable is raised so the caller can show the contact options.
 import argparse
 import asyncio
 import functools
+import logging
 import time
 from dataclasses import dataclass
 from typing import AsyncIterator, Callable
@@ -37,6 +38,17 @@ FALLBACK_REMINDER = """# Most important rules (always follow)
 - Call IT Cybx a "growth studio", never an "agency".
 - Answer the question in the first sentence. About 60 words. Reply in the visitor's language."""
 
+
+log = logging.getLogger("chatbot.llm")
+
+# For background jobs (chat summaries): no website knowledge, no bot rules.
+TASK_SYSTEM = ("You help the IT Cybx team (an e-commerce growth studio) with internal notes "
+               "about website chats. Follow the instructions exactly and add nothing else.")
+
+# Claude models that accept a system message in the middle of the chat. On
+# the others, this turn's note goes in a second system block instead.
+MID_CHAT_SYSTEM_MODELS = ("claude-sonnet-5-5", "claude-opus-5", "claude-opus-4-8",
+                          "claude-fable-5", "claude-mythos-5")
 
 COOLDOWN_SECONDS = 60
 _resting_until: dict[str, float] = {}  # model/key name -> time it may be tried again
@@ -67,20 +79,23 @@ async def claude_stream(
     sent as a system message after the visitor's message, so the cached
     rules + knowledge block in front stays unchanged.
     """
-    if instruction:
+    model = settings.anthropic_model
+    system_blocks = claude_system(system)
+    if instruction and model.startswith(MID_CHAT_SYSTEM_MODELS):
         messages = [*messages, {"role": "system", "content": instruction}]
+    elif instruction:
+        system_blocks = [*system_blocks, {"type": "text", "text": instruction}]  # after the cached block
     client = anthropic.AsyncAnthropic(
         api_key=settings.anthropic_api_key.get_secret_value(),
         timeout=settings.llm_timeout_seconds,
         max_retries=1,
     )
     async with client.messages.stream(
-        model=settings.anthropic_model,
+        model=model,
         max_tokens=settings.max_output_tokens,
-        thinking={"type": "between_tools"},  # no extended thinking: fast first word
-        output_config={"effort": "low"},
-        system=claude_system(system),
+        system=system_blocks,
         messages=messages,
+        **claude_speed_options(model),
     ) as stream:
         async for text in stream.text_stream:
             yield text
@@ -94,17 +109,34 @@ async def claude_stream(
     usage.tokens_out = final.usage.output_tokens
 
 
+def claude_speed_options(model: str) -> dict:
+    """The fastest settings each Claude model accepts (a chat reply needs no deep thinking).
+
+    Only Sonnet 5.5 can turn thinking off ("between_tools"); sending that to
+    another model is an error, so the others just think at low effort.
+    Haiku 4.5 and older models take neither setting.
+    """
+    if model.startswith("claude-sonnet-5-5"):
+        return {"thinking": {"type": "between_tools"}, "output_config": {"effort": "low"}}
+    if model.startswith(("claude-haiku", "claude-3", "claude-sonnet-4-5")):
+        return {}
+    return {"output_config": {"effort": "low"}}
+
+
 async def mistral_stream(
-    system: str, messages: list[dict], usage: Usage, instruction: str = "", api_key: str = ""
+    system: str, messages: list[dict], usage: Usage, instruction: str = "", api_key: str = "",
+    repeat_rules: bool = True,
 ) -> AsyncIterator[str]:
     """Stream a reply from Mistral.
 
     Smaller models tend to forget rules placed before a long knowledge
     block, so the full rules and the most important ones are repeated
     after it (the last instructions are the ones they follow best).
+    `repeat_rules=False` is for background jobs that don't use the bot prompt.
     """
-    rules = (KNOWLEDGE_DIR / "rules.md").read_text(encoding="utf-8").strip()
-    system = f"{system}\n\n---\n\n{rules}\n\n{FALLBACK_REMINDER}"
+    if repeat_rules:
+        rules = (KNOWLEDGE_DIR / "rules.md").read_text(encoding="utf-8").strip()
+        system = f"{system}\n\n---\n\n{rules}\n\n{FALLBACK_REMINDER}"
     if instruction:
         system = f"{system}\n\n# Note for this reply\n{instruction}"
     client = Mistral(
@@ -127,14 +159,16 @@ async def mistral_stream(
             usage.model_used = chunk.model or settings.mistral_model
 
 
-def model_chain() -> list[tuple[str, Callable]]:
+def model_chain(task: bool = False) -> list[tuple[str, Callable]]:
     """The models to try, in order, as (name, stream function).
 
     Names are for logs and cooldowns ("mistral-1", "mistral-2", "claude");
-    they never contain the keys themselves.
+    they never contain the keys themselves. `task` is for background jobs
+    with their own short system prompt.
     """
+    extra = {"repeat_rules": False} if task else {}
     mistral = [
-        (f"mistral-{i}", functools.partial(mistral_stream, api_key=key))
+        (f"mistral-{i}", functools.partial(mistral_stream, api_key=key, **extra))
         for i, key in enumerate(settings.mistral_keys, start=1)
     ]
     claude = [("claude", claude_stream)] if settings.anthropic_api_key.get_secret_value() else []
@@ -148,17 +182,21 @@ async def stream_reply(
     usage: Usage,
     force_fallback: bool = False,
     instruction: str = "",
+    system: str | None = None,
 ) -> AsyncIterator[str]:
     """Stream the bot's reply to `question`, moving down the model chain on failure.
 
     `force_fallback` skips the first model in the chain (for testing).
     `history` is the earlier messages ({"role", "content"}), oldest first.
     `instruction` is an optional note for this reply only.
+    `system` replaces the bot's rules + knowledge, for background jobs
+    (e.g. TASK_SYSTEM) that don't need the whole website in the prompt.
     `usage` is filled in once the reply is complete.
     """
-    system = system_text(question, language)
+    task = system is not None
+    system = system if task else system_text(question, language)
     messages = [*history, {"role": "user", "content": question}]
-    chain = model_chain()[1:] if force_fallback else model_chain()
+    chain = model_chain(task)[1:] if force_fallback else model_chain(task)
     now = time.monotonic()
     ready = [m for m in chain if _resting_until.get(m[0], 0) <= now]
     resting = [m for m in chain if m not in ready]  # tried last, in case all are resting
@@ -173,7 +211,9 @@ async def stream_reply(
             usage.source = name
             _resting_until.pop(name, None)
             return
-        except Exception:
+        except Exception as e:
+            # The type only: messages from the SDKs can contain request details.
+            log.warning("AI model %s failed (%s), trying the next one", name, type(e).__name__)
             if started:  # half a reply already went out: don't start a second one
                 raise LLMUnavailable(f"{name} stopped mid-reply")
             _resting_until[name] = time.monotonic() + COOLDOWN_SECONDS
@@ -189,7 +229,7 @@ async def summarize(summary: str, messages: list[dict], language: str) -> str:
         f"Summary so far: {summary or '(none)'}\n\nMessages:\n{transcript}"
     )
     usage = Usage()
-    parts = [t async for t in stream_reply(question, language, [], usage)]
+    parts = [t async for t in stream_reply(question, language, [], usage, system=TASK_SYSTEM)]
     return "".join(parts).strip()
 
 

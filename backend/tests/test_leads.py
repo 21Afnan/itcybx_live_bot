@@ -39,7 +39,8 @@ def test_email_has_subject_details_and_reply_to(monkeypatch):
 
 @pytest.fixture
 def alerts(monkeypatch):
-    sent = {"email": [], "sheet": [], "notified": []}
+    """Both channels set up, no waiting between retries, the database faked."""
+    sent = {"email": [], "sheet": [], "notified": [], "done": set()}
 
     async def summary(state):
         return "- summary"
@@ -47,11 +48,23 @@ def alerts(monkeypatch):
     async def find_conversation(session_id):
         return None
 
+    async def sent_alerts(session_id):
+        return set(sent["done"])
+
+    async def mark_alert_sent(session_id, channel):
+        sent["done"].add(channel)
+
     async def mark(session_id):
         sent["notified"].append(session_id)
 
+    for name, value in [("smtp_host", "smtp.example"), ("smtp_user", "info@itcybx.co.uk"),
+                        ("google_sheet_id", "sheet-1"), ("google_service_account_json", "/sa.json")]:
+        monkeypatch.setattr(notify.settings, name, value)
+    monkeypatch.setattr(notify, "RETRY_DELAYS", [0, 0])
     monkeypatch.setattr(notify, "chat_summary", summary)
     monkeypatch.setattr(notify.repo, "find_conversation", find_conversation)
+    monkeypatch.setattr(notify.repo, "sent_alerts", sent_alerts)
+    monkeypatch.setattr(notify.repo, "mark_alert_sent", mark_alert_sent)
     monkeypatch.setattr(notify.repo, "mark_lead_notified", mark)
     return sent
 
@@ -77,7 +90,58 @@ def test_one_channel_failing_still_sends_the_other(monkeypatch, alerts):
     asyncio.run(notify.notify_team(STATE))
 
     assert len(alerts["sheet"]) == 1
+    assert alerts["done"] == {"sheet"}
     assert alerts["notified"] == []  # not marked: the team didn't get both
+
+
+def test_failed_alert_is_tried_again(monkeypatch, alerts):
+    tries = []
+
+    async def email(row):
+        tries.append(row)
+        if len(tries) < 3:
+            raise ConnectionError("smtp busy")
+    async def sheet(row): alerts["sheet"].append(row)
+    monkeypatch.setattr(notify, "send_email", email)
+    monkeypatch.setattr(notify, "append_to_sheet", sheet)
+
+    asyncio.run(notify.notify_team(STATE))
+
+    assert len(tries) == 3
+    assert alerts["notified"] == [STATE["session_id"]]
+
+
+def test_later_retry_only_resends_what_failed(monkeypatch, alerts):
+    alerts["done"].add("sheet")  # the sheet row went in on the first attempt
+    async def email(row): alerts["email"].append(row)
+    async def sheet(row): alerts["sheet"].append(row)
+    monkeypatch.setattr(notify, "send_email", email)
+    monkeypatch.setattr(notify, "append_to_sheet", sheet)
+
+    asyncio.run(notify.notify_team(STATE))
+
+    assert len(alerts["email"]) == 1 and alerts["sheet"] == []
+    assert alerts["notified"] == [STATE["session_id"]]
+
+
+def test_channel_not_set_up_is_skipped(monkeypatch, alerts):
+    monkeypatch.setattr(notify.settings, "google_sheet_id", "")
+    async def email(row): alerts["email"].append(row)
+    monkeypatch.setattr(notify, "send_email", email)
+
+    asyncio.run(notify.notify_team(STATE))
+
+    assert len(alerts["email"]) == 1
+    assert alerts["notified"] == [STATE["session_id"]]
+
+
+def test_no_channel_set_up_leaves_the_lead_for_the_hourly_retry(monkeypatch, alerts):
+    monkeypatch.setattr(notify.settings, "smtp_host", "")
+    monkeypatch.setattr(notify.settings, "google_sheet_id", "")
+
+    asyncio.run(notify.notify_team(STATE))
+
+    assert alerts["notified"] == []
 
 
 def test_google_token_is_requested_with_a_signed_key(tmp_path, monkeypatch):

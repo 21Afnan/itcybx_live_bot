@@ -14,7 +14,7 @@ EXPECTED_COLUMNS = {
     "messages": {"id", "conversation_id", "role", "content", "model_used", "tokens_in",
                  "tokens_out", "created_at"},
     "leads": {"id", "conversation_id", "name", "email", "whatsapp", "platform", "market",
-              "store_url", "status", "created_at", "notified_at"},
+              "store_url", "status", "created_at", "notified_at", "emailed_at", "sheet_added_at"},
     "kb_versions": {"id", "file", "content_hash", "synced_at"},
 }
 

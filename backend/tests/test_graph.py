@@ -128,3 +128,23 @@ def test_no_store_questions_two_replies_in_a_row(fake_ai):
         asked.append("After answering, ask ONE" in fake_ai[-1]["instruction"])
     # platform, rest, market, rest, store URL, then never again
     assert asked == [True, False, True, False, True, False, False]
+
+
+def test_first_market_stays_unless_the_bot_asked_for_it(fake_ai):
+    state, _ = turn(new_state("s1", "en"), "Sara")
+    state, _ = turn(state, "We sell in Saudi on Salla")
+    state, _ = turn(state, "Maybe the UK one day")
+    assert state["lead"]["market"] == "KSA"  # a passing mention doesn't replace it
+
+
+def test_answer_to_the_market_question_replaces_it(fake_ai):
+    state, _ = turn(new_state("s1", "en"), "Sara")
+    state["lead"]["market"] = "KSA"
+    state.update(last_step="qualify", qualify_asked=["market"])
+    state, _ = turn(state, "Actually mostly the UK")
+    assert state["lead"]["market"] == "UK"
+
+
+def test_hello_there_is_not_taken_as_a_name(fake_ai):
+    state, _ = turn(new_state("s1", "en"), "Hello there")
+    assert state.get("name") == ""

@@ -74,11 +74,18 @@ def router(state: ChatState) -> dict:
     if not state.get("name"):
         return {"instruction": "", "actions": [], "problems": []}
 
-    found = extract.find(message)
+    last_step = state.get("last_step")
+    asked = state.get("qualify_asked") or []
+    just_asked = asked[-1] if last_step == "qualify" and asked else None
+    found = extract.find(message, expecting_phone=last_step == "capture_lead")
     lead = dict(state["lead"])
     for field in lead:
-        if getattr(found, field):
-            lead[field] = getattr(found, field)
+        value = getattr(found, field)
+        # Email and WhatsApp: the newest wins (people correct typos). Platform,
+        # market and store: the first answer stays, so "maybe the UK later"
+        # doesn't replace it, unless the bot has just asked for that detail.
+        if value and (field not in QUALIFY_FIELDS or not lead[field] or field == just_asked):
+            lead[field] = value
 
     before = state.get("lead_status", "none")
     after = lead_status(state["name"], lead)

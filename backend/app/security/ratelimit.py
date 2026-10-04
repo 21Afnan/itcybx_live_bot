@@ -13,8 +13,10 @@ async def allow(key: str, limit: int | None = None, window: int | None = None) -
     """Count one request for `key`. False once the limit is reached in this window."""
     limit = limit or settings.rate_limit_messages
     window = window or settings.rate_limit_window_seconds
-    redis = sessions.get_redis()
-    count = await redis.incr(f"ratelimit:{key}")
-    if count == 1:
-        await redis.expire(f"ratelimit:{key}", window)
+    # Count and set the expiry in one step, so a crash in between can't leave
+    # a counter that never resets. NX: the window starts at the first message.
+    async with sessions.get_redis().pipeline(transaction=True) as pipe:
+        pipe.incr(f"ratelimit:{key}")
+        pipe.expire(f"ratelimit:{key}", window, nx=True)
+        count, _ = await pipe.execute()
     return count <= limit

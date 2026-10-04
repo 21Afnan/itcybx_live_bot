@@ -55,3 +55,28 @@ def test_interest_and_contact_signals():
     assert not shows_interest("We run facebook ads")  # "book" inside "facebook"
     assert wants_contact("Can I talk to someone?")
     assert not wants_contact("What do you do?")
+
+
+def test_market_is_not_read_from_a_web_address():
+    found = find("our store is glowbeauty.co.uk")
+    assert found.store_url == "https://glowbeauty.co.uk"
+    assert found.market == ""
+
+
+def test_big_numbers_are_not_taken_for_a_phone():
+    assert find("we did 10000000 in sales last year").problems == []
+
+
+def test_number_is_checked_when_the_bot_asked_for_whatsapp():
+    assert "whatsapp_needs_country_code" in find("0501234567", expecting_phone=True).problems
+    assert "whatsapp_needs_country_code" in find("my whatsapp is 0501234567").problems
+
+
+def test_numbers_inside_links_are_not_phones():
+    assert find("see https://shop.com/products/123456789 please", expecting_phone=True).problems == []
+
+
+def test_greetings_are_not_names():
+    for text in ["Hello there", "hi", "Good morning", "ok", "السلام عليكم"]:
+        assert not valid_name(clean_name(text)), text
+    assert valid_name(clean_name("Hello, I'm Noor"))

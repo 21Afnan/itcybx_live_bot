@@ -26,7 +26,7 @@ from app.config import settings
 from app.db.engine import get_engine
 from app.graph.build import GREETING, run_turn
 from app.graph.state import new_state
-from app.knowledge.sync import start_scheduler
+from app.jobs import start_scheduler
 from app.leads.notify import notify_team
 from app.security import ratelimit
 
@@ -52,9 +52,11 @@ TOO_LONG = {
 }
 
 log = logging.getLogger("chatbot")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Start the weekly website check with the server (not in tests)."""
+    """Start the background jobs with the server (not in tests): app/jobs.py."""
     scheduler = start_scheduler() if settings.app_env != "test" else None
     yield
     if scheduler:
@@ -196,10 +198,8 @@ async def process_turn(state: dict, message: str, out: asyncio.Queue) -> None:
         out.put_nowait(None)  # end of stream
 
 
-async def reply_events(state: dict, message: str):
+async def reply_events(out: asyncio.Queue):
     """Stream the events of one turn to the visitor as they happen."""
-    out: asyncio.Queue = asyncio.Queue()
-    background(process_turn(state, message, out))
     while (item := await out.get()) is not None:
         yield item
 
@@ -221,8 +221,12 @@ async def chat(body: ChatRequest, request: Request):
         return sse_error(429, "rate_limited", TOO_FAST[language])
     if not await sessions.lock(state["session_id"]):
         raise HTTPException(429, "Please wait for the current reply")
+    # Started here, not inside the stream: if the visitor leaves before the
+    # stream begins, the turn still runs, is saved and releases the lock.
+    out: asyncio.Queue = asyncio.Queue()
+    background(process_turn(state, message, out))
     return StreamingResponse(
-        reply_events(state, message),
+        reply_events(out),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

@@ -76,7 +76,9 @@ class Lead(Base):
     store_url: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(10), server_default="partial")
     created_at: Mapped[datetime] = created_now()
-    notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # every alert sent
+    emailed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sheet_added_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class KbVersion(Base):

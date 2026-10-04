@@ -21,7 +21,27 @@ You need Docker Desktop running and a Supabase project (the database).
    ```
    curl http://localhost:8000/health
    ```
-   You should see `{"status":"ok","database":"ok","redis":"ok"}`.
+   You should see `{"status":"ok","db":"ok","redis":"ok"}`.
+4. Create or update the database tables (first time, and after pulling new
+   migrations):
+   ```
+   docker compose exec api alembic upgrade head
+   ```
+
+## Production checklist
+
+In the server's `.env`:
+
+- `APP_ENV=production` — also re-checks the website once at start-up, so a
+  redeploy never brings back older knowledge files.
+- `FORWARDED_ALLOW_IPS` — the IP(s) of the proxy in front of the API
+  (Nginx, load balancer). Without it every visitor looks like the proxy and
+  they all share one rate limit.
+- `ALLOWED_ORIGINS` — remove `http://localhost:8080`.
+
+Run `alembic upgrade head` after each deploy that adds a migration. To keep
+the rollback history of the weekly sync across redeploys, mount a volume at
+`/code/knowledge/.history`.
 
 ## Run the tests
 

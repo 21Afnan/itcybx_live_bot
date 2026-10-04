@@ -2,7 +2,8 @@
 
 Runs in the background after the visitor's reply, so it never slows the
 chat. If one channel fails the other still goes out; notified_at is only
-set when both worked.
+set when every configured channel worked. An hourly job (app/jobs.py)
+retries the leads whose alerts didn't all go out.
 """
 
 import asyncio
@@ -10,7 +11,7 @@ import json
 import logging
 import smtplib
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -20,7 +21,7 @@ from google.auth import crypt, jwt
 from app.config import settings
 from app.db import repo
 from app.graph.state import ChatState
-from app.llm.models import LLMUnavailable, Usage, stream_reply
+from app.llm.models import TASK_SYSTEM, LLMUnavailable, Usage, stream_reply
 
 log = logging.getLogger("chatbot.leads")
 
@@ -37,7 +38,7 @@ async def chat_summary(state: ChatState) -> str:
         "Reply with the bullets only.\n\n" + transcript
     )
     try:
-        parts = [t async for t in stream_reply(question, "en", [], Usage())]
+        parts = [t async for t in stream_reply(question, "en", [], Usage(), system=TASK_SYSTEM)]
         return "".join(parts).strip()
     except LLMUnavailable:
         return "(summary unavailable)"
@@ -131,14 +132,70 @@ async def append_to_sheet(row: list[str]) -> None:
 # ---- both ---------------------------------------------------------------
 
 
-async def notify_team(state: ChatState) -> None:
-    """Email + Sheet row for a lead that has just become complete."""
-    conversation = await repo.find_conversation(state["session_id"])
-    row = lead_row(state, conversation.source_page if conversation else "", await chat_summary(state))
+RETRY_DELAYS = [10, 60]  # seconds before the 2nd and 3rd try of a failed alert
+RETRY_WINDOW = (timedelta(minutes=15), timedelta(days=1))  # leads the hourly retry looks at
 
-    results = await asyncio.gather(send_email(row), append_to_sheet(row), return_exceptions=True)
-    for channel, result in zip(("email", "Google Sheet"), results):
-        if isinstance(result, Exception):
-            log.error("Lead alert by %s failed: %s", channel, type(result).__name__)
-    if not any(isinstance(r, Exception) for r in results):
-        await repo.mark_lead_notified(state["session_id"])
+
+def channels() -> dict:
+    """The alert channels that are set up in .env, by name."""
+    configured = {
+        "email": (send_email, bool(settings.smtp_host and settings.smtp_user)),
+        "sheet": (append_to_sheet, bool(settings.google_sheet_id and settings.google_service_account_json)),
+    }
+    return {name: send for name, (send, ok) in configured.items() if ok}
+
+
+async def with_retries(send, row: list[str]) -> None:
+    """Try an alert up to 3 times, waiting a little longer each time."""
+    for delay in [*RETRY_DELAYS, None]:
+        try:
+            return await send(row)
+        except Exception:
+            if delay is None:
+                raise
+            await asyncio.sleep(delay)
+
+
+async def notify_team(state: ChatState) -> None:
+    """Email + Sheet row for a complete lead.
+
+    Each channel is tried a few times. Channels that already worked for this
+    lead are skipped, so the hourly retry never sends the same alert twice.
+    """
+    session_id = state["session_id"]
+    if not channels():
+        log.warning("New lead, but no alert channel is set up (SMTP_* / GOOGLE_SHEET_ID in .env)")
+        return
+    todo = {name: send for name, send in channels().items()
+            if name not in await repo.sent_alerts(session_id)}
+    if todo:
+        conversation = await repo.find_conversation(session_id)
+        row = lead_row(state, conversation.source_page if conversation else "",
+                       await chat_summary(state))
+        results = await asyncio.gather(*(with_retries(send, row) for send in todo.values()),
+                                       return_exceptions=True)
+        failed = False
+        for name, result in zip(todo, results):
+            if isinstance(result, Exception):
+                failed = True
+                log.error("Lead alert by %s failed: %s", name, type(result).__name__)
+            else:
+                await repo.mark_alert_sent(session_id, name)
+        if failed:
+            return
+    await repo.mark_lead_notified(session_id)
+
+
+async def retry_unsent_alerts() -> None:
+    """Hourly: resend the alerts of leads that are still not fully notified
+    (the server restarted mid-alert, or SMTP / Google was down)."""
+    try:
+        conversations = await repo.unnotified_leads(*RETRY_WINDOW)
+    except Exception:
+        log.exception("Could not look for unsent lead alerts")
+        return
+    for conversation in conversations:
+        try:
+            await notify_team(await repo.rebuild_state(conversation))
+        except Exception:
+            log.exception("Lead alert retry failed")

@@ -178,3 +178,78 @@ def test_keys_are_listed_once_without_blanks(monkeypatch):
     monkeypatch.setattr(models.settings, "mistral_api_keys",
                         SecretStr(" key-2 ,, test-mistral-key-1, key-3 "))
     assert models.settings.mistral_keys == ["test-mistral-key-1", "key-2", "key-3"]
+
+
+def test_background_jobs_skip_the_website_knowledge(monkeypatch):
+    seen = []
+
+    async def mistral(system, messages, usage, instruction="", api_key="", repeat_rules=True):
+        seen.append((system, repeat_rules))
+        usage.model_used = "mistral"
+        yield "summary"
+
+    monkeypatch.setattr(models.settings, "llm_primary", "mistral")
+    monkeypatch.setattr(models, "mistral_stream", mistral)
+    text, _ = collect("Summarise this chat", system=models.TASK_SYSTEM)
+    assert text == "summary"
+    assert seen == [(models.TASK_SYSTEM, False)]  # no knowledge, no bot rules repeated
+
+
+class FakeClaudeStream:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    @property
+    def text_stream(self):
+        async def words():
+            yield "Hi"
+        return words()
+
+    async def get_final_message(self):
+        from types import SimpleNamespace
+        usage = SimpleNamespace(input_tokens=1, cache_creation_input_tokens=0,
+                                cache_read_input_tokens=0, output_tokens=1)
+        return SimpleNamespace(stop_reason="end_turn", model="claude", usage=usage)
+
+
+def claude_request(monkeypatch, model: str) -> dict:
+    """The request claude_stream sends for one reply with a note, on `model`."""
+    calls = []
+
+    class FakeClient:
+        def __init__(self, **options):
+            self.messages = self
+
+        def stream(self, **request):
+            calls.append(request)
+            return FakeClaudeStream()
+
+    monkeypatch.setattr(models.anthropic, "AsyncAnthropic", FakeClient)
+    monkeypatch.setattr(models.settings, "anthropic_model", model)
+
+    async def run():
+        history = [{"role": "user", "content": "Hi"}]
+        return [t async for t in models.claude_stream("RULES", history, Usage(), "Ask their platform")]
+
+    assert asyncio.run(run()) == ["Hi"]
+    return calls[0]
+
+
+def test_sonnet_5_5_gets_thinking_off_and_the_note_after_the_message(monkeypatch):
+    request = claude_request(monkeypatch, "claude-sonnet-5-5")
+    assert request["thinking"] == {"type": "between_tools"}
+    assert request["messages"][-1] == {"role": "system", "content": "Ask their platform"}
+    assert len(request["system"]) == 1
+
+
+def test_other_claude_models_get_only_settings_they_accept(monkeypatch):
+    request = claude_request(monkeypatch, "claude-sonnet-5")
+    assert "thinking" not in request  # "between_tools" would be an error here
+    assert request["output_config"] == {"effort": "low"}
+    assert request["messages"][-1]["role"] == "user"  # no mid-chat system message on this model
+    assert request["system"][0]["cache_control"] == {"type": "ephemeral"}
+    assert request["system"][1] == {"type": "text", "text": "Ask their platform"}
+    assert models.claude_speed_options("claude-haiku-4-5") == {}

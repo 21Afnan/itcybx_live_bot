@@ -34,8 +34,30 @@ class FakeRedis:
         self.data[key] = int(self.data.get(key, 0)) + 1
         return self.data[key]
 
-    async def expire(self, key, seconds):
+    async def expire(self, key, seconds, nx=False):
         return True
+
+    def pipeline(self, transaction=True):
+        return FakePipeline(self)
+
+
+class FakePipeline:
+    """Queues commands and runs them on execute(), like redis-py's pipeline."""
+
+    def __init__(self, redis):
+        self.redis, self.queued = redis, []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def __getattr__(self, command):
+        return lambda *args, **kwargs: self.queued.append((command, args, kwargs))
+
+    async def execute(self):
+        return [await getattr(self.redis, c)(*a, **k) for c, a, k in self.queued]
 
 
 @pytest.fixture
