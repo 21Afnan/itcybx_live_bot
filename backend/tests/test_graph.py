@@ -148,3 +148,44 @@ def test_answer_to_the_market_question_replaces_it(fake_ai):
 def test_hello_there_is_not_taken_as_a_name(fake_ai):
     state, _ = turn(new_state("s1", "en"), "Hello there")
     assert state.get("name") == ""
+
+
+def test_question_before_the_name_is_acknowledged(fake_ai):
+    state, events = turn(new_state("s1", "en"), "what do you do")
+    assert state["name"] == ""
+    assert events[0]["text"] == "Happy to help with that! First, what's your name?"
+
+
+def test_ai_down_does_not_use_up_the_question_it_was_told_to_ask(monkeypatch, fake_ai):
+    state, _ = turn(new_state("s1", "en"), "Sara")
+
+    async def broken(*args, **kwargs):
+        raise nodes.LLMUnavailable("down")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(nodes, "stream_reply", broken)
+    state, _ = turn(state, "What do you do?")  # would have asked for the platform
+    assert state["qualify_asked"] == [] and state["last_step"] == ""
+    assert state["messages"][-1]["role"] == "assistant"  # same history Supabase saves
+    monkeypatch.setattr(nodes, "stream_reply", fake_ai_stream(fake_ai))  # AI back up
+    state, _ = turn(state, "What do you do?")
+    assert "e-commerce platform" in fake_ai[-1]["instruction"]  # asked now instead
+
+
+def test_lead_details_still_count_when_the_ai_is_down(monkeypatch, fake_ai):
+    state, _ = turn(new_state("s1", "en"), "Sara")
+
+    async def broken(*args, **kwargs):
+        raise nodes.LLMUnavailable("down")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(nodes, "stream_reply", broken)
+    state, _ = turn(state, "sara@mystore.com, +966501234567")
+    assert state["lead_status"] == "complete" and state["lead_just_completed"]
+
+
+def fake_ai_stream(calls):
+    async def fake_stream_reply(question, language, history, usage, instruction=""):
+        calls.append({"question": question, "history": history, "instruction": instruction})
+        yield "Answer."
+    return fake_stream_reply

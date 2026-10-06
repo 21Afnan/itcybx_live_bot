@@ -19,6 +19,7 @@ TEXTS = {
     "en": {
         "nice_to_meet": "Nice to meet you, {name}! How can I help you grow your store today?",
         "name_again": "Sorry, I didn't catch that. What's your name?",
+        "name_first": "Happy to help with that! First, what's your name?",
         "error": "Something went wrong. You can reach us on WhatsApp or email.",
         "calendly": "Book your Growth Audit",
         "whatsapp": "WhatsApp us",
@@ -28,6 +29,7 @@ TEXTS = {
     "ar": {
         "nice_to_meet": "تشرفنا يا {name}! كيف يمكنني مساعدتك في تنمية متجرك اليوم؟",
         "name_again": "عذرًا، لم ألتقط اسمك. ما اسمك؟",
+        "name_first": "يسعدني مساعدتك في ذلك! لكن أولًا، ما اسمك؟",
         "error": "حدث خطأ. يمكنك التواصل معنا عبر واتساب أو البريد الإلكتروني.",
         "calendly": "احجز تقييم النمو",
         "whatsapp": "راسلنا على واتساب",
@@ -72,12 +74,13 @@ def router(state: ChatState) -> dict:
     """Read the new message: pick up lead details and interest signals."""
     message = state["user_message"]
     if not state.get("name"):
-        return {"instruction": "", "actions": [], "problems": []}
+        return {"instruction": "", "actions": [], "problems": [], "failed": False}
 
     last_step = state.get("last_step")
     asked = state.get("qualify_asked") or []
     just_asked = asked[-1] if last_step == "qualify" and asked else None
-    found = extract.find(message, expecting_phone=last_step == "capture_lead")
+    found = extract.find(message, expecting_phone=last_step == "capture_lead",
+                         expecting_platform=just_asked == "platform")
     lead = dict(state["lead"])
     for field in lead:
         value = getattr(found, field)
@@ -98,6 +101,7 @@ def router(state: ChatState) -> dict:
         "problems": found.problems,
         "instruction": "",
         "actions": [],
+        "failed": False,
     }
 
 
@@ -132,7 +136,9 @@ async def greet(state: ChatState, writer: StreamWriter) -> dict:
     """First message: it is the visitor's name."""
     name = extract.clean_name(state["user_message"])
     if not extract.valid_name(name):
-        reply = text(state, "name_again")
+        # Visitors often ask their question first: say we'll get to it.
+        asked = extract.looks_like_question(state["user_message"])
+        reply = text(state, "name_first" if asked else "name_again")
         writer({"type": "token", "text": reply})
         return {"reply": reply}
 
@@ -231,7 +237,18 @@ async def answer(state: ChatState, writer: StreamWriter) -> dict:
             writer({"type": "token", "text": piece})
     except LLMUnavailable:
         writer({"type": "error", "code": "unavailable", "message": text(state, "error")})
-        return {"reply": text(state, "error"), "actions": contact_buttons(state), "usage": {}}
+        # The same two messages Supabase saves, so a chat rebuilt from there
+        # matches this one. run_turn undoes this turn's qualify / capture
+        # bookkeeping: the question was never actually asked.
+        return {
+            "reply": text(state, "error"), "actions": contact_buttons(state), "usage": {},
+            "failed": True,
+            "messages": [
+                *state["messages"],
+                {"role": "user", "content": state["user_message"]},
+                {"role": "assistant", "content": text(state, "error")},
+            ],
+        }
 
     reply = "".join(parts)
     messages = [

@@ -80,3 +80,38 @@ def test_greetings_are_not_names():
     for text in ["Hello there", "hi", "Good morning", "ok", "السلام عليكم"]:
         assert not valid_name(clean_name(text)), text
     assert valid_name(clean_name("Hello, I'm Noor"))
+
+
+def test_questions_and_store_talk_are_not_names():
+    for text in ["what do you do", "can you help", "Shopify store", "I need more sales",
+                 "هل تعملون مع سلة", "ممكن مساعدة"]:
+        assert not valid_name(clean_name(text)), text
+    assert valid_name(clean_name("I'm Sara")) and valid_name(clean_name("Mohammed Ali"))
+
+
+def test_name_is_kept_on_one_line():
+    assert clean_name("Sara\nAli") == "Sara Ali"
+
+
+def test_arabic_everyday_words_are_not_platforms():
+    assert find("زد مبيعاتي").platform == ""  # "increase my sales"
+    assert find("أضفت المنتج إلى سلة التسوق").platform == ""  # "the shopping cart"
+    assert find("نبيع على سلة").platform == "Salla"
+    assert find("منصة زد").platform == "Zid"
+    assert find("سلة", expecting_platform=True).platform == "Salla"  # answer to the question
+
+
+def test_arabic_how_many_alone_is_not_interest():
+    assert not shows_interest("كم يوم يستغرق المشروع؟")  # "how many days"
+    assert shows_interest("كم السعر؟") and shows_interest("بكم التقييم")
+
+
+def test_country_code_without_plus_is_accepted_when_a_phone_is_expected():
+    assert find("my whatsapp is 966501234567").whatsapp == "+966501234567"
+    assert find("447700900123", expecting_phone=True).whatsapp == "+447700900123"
+    assert find("we sold 966501234567 units").whatsapp == ""  # no sign it is a phone
+
+
+def test_dates_are_not_phone_numbers():
+    assert find("call me on 2026-10-06").problems == []
+    assert find("call me after 06/10/2026").problems == []

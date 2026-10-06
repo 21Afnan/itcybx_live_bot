@@ -5,6 +5,7 @@ if Redis forgets a chat the API rebuilds it from there (app/db/repo.py).
 """
 
 import json
+import uuid
 from functools import lru_cache
 
 from redis.asyncio import Redis
@@ -13,7 +14,8 @@ from app.config import settings
 from app.graph.state import ChatState
 
 STATE_TTL_SECONDS = 7 * 24 * 3600
-LOCK_SECONDS = 60
+LOCK_SECONDS = 300
+TURN_TIMEOUT_SECONDS = 240  # finish or cancel work before its lease expires
 SAVED_FIELDS = ["session_id", "language", "name", "messages", "summary", "lead",
                 "lead_status", "capture_asks", "qualify_asked", "last_step"]
 
@@ -36,10 +38,22 @@ async def save(state: ChatState) -> None:
     )
 
 
-async def lock(session_id: str) -> bool:
+async def forget(session_id: str) -> None:
+    """Drop the cached state; the next load rebuilds it from Supabase."""
+    await get_redis().delete(f"chat:state:{session_id}")
+
+
+async def lock(session_id: str) -> str | None:
     """Only one message per chat at a time. False if one is already running."""
-    return bool(await get_redis().set(f"chat:lock:{session_id}", "1", nx=True, ex=LOCK_SECONDS))
+    token = uuid.uuid4().hex
+    acquired = await get_redis().set(f"chat:lock:{session_id}", token, nx=True, ex=LOCK_SECONDS)
+    return token if acquired else None
 
 
-async def unlock(session_id: str) -> None:
-    await get_redis().delete(f"chat:lock:{session_id}")
+async def unlock(session_id: str, token: str) -> None:
+    # A delayed worker must never release another worker's lease.
+    await get_redis().eval(
+        "if redis.call('get', KEYS[1]) == ARGV[1] then "
+        "return redis.call('del', KEYS[1]) else return 0 end",
+        1, f"chat:lock:{session_id}", token,
+    )

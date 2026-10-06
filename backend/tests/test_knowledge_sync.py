@@ -228,3 +228,11 @@ def test_broken_site_changes_nothing(tmp_path):
     with pytest.raises(sync.SiteLooksWrong):
         sync.check_site({"en/x.md": "x"}, tmp_path)  # both real pages would vanish
     assert (tmp_path / "en/pricing.md").exists()
+
+
+def test_only_the_newest_backups_are_kept(tmp_path):
+    for i in range(25):
+        (tmp_path / ".history" / f"20261006-0000{i:02d}").mkdir(parents=True)
+    sync.prune_history(tmp_path, keep=20)
+    left = sorted(p.name for p in (tmp_path / ".history").iterdir())
+    assert len(left) == 20 and left[0] == "20261006-000005"

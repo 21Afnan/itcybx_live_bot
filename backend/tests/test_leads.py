@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 
 import httpx
 import pytest
@@ -57,6 +58,10 @@ def alerts(monkeypatch):
     async def mark(session_id):
         sent["notified"].append(session_id)
 
+    @asynccontextmanager
+    async def alert_lock(session_id):
+        yield sent.get("lock_free", True)
+
     for name, value in [("smtp_host", "smtp.example"), ("smtp_user", "info@itcybx.co.uk"),
                         ("google_sheet_id", "sheet-1"), ("google_service_account_json", "/sa.json")]:
         monkeypatch.setattr(notify.settings, name, value)
@@ -66,7 +71,18 @@ def alerts(monkeypatch):
     monkeypatch.setattr(notify.repo, "sent_alerts", sent_alerts)
     monkeypatch.setattr(notify.repo, "mark_alert_sent", mark_alert_sent)
     monkeypatch.setattr(notify.repo, "mark_lead_notified", mark)
+    monkeypatch.setattr(notify.repo, "alert_lock", alert_lock)
     return sent
+
+
+def test_alert_already_running_elsewhere_is_not_sent_twice(monkeypatch, alerts):
+    alerts["lock_free"] = False  # another worker holds this lead's alert lock
+    async def email(row): alerts["email"].append(row)
+    monkeypatch.setattr(notify, "send_email", email)
+
+    asyncio.run(notify.notify_team(STATE))
+
+    assert alerts["email"] == [] and alerts["notified"] == []
 
 
 def test_both_channels_sent_and_lead_marked(monkeypatch, alerts):

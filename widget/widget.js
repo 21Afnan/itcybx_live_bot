@@ -23,7 +23,8 @@
       namePlaceholder: "Your name", messagePlaceholder: "Type your message…",
       start: "Start chat", send: "Send", open: "Open chat", close: "Close chat",
       error: "Something went wrong. You can reach us on WhatsApp or email.",
-      rateLimited: "You're sending messages too fast. Please wait a moment."
+      rateLimited: "You're sending messages too fast. Please wait a moment.",
+      busy: "Please wait for the current reply."
     },
     ar: {
       title: "مساعد IT Cybx", subtitle: "يرد عادةً فورًا",
@@ -32,7 +33,8 @@
       start: "ابدأ المحادثة", send: "إرسال",
       open: "افتح المحادثة", close: "أغلق المحادثة",
       error: "حدث خطأ. يمكنك التواصل معنا عبر واتساب أو البريد الإلكتروني.",
-      rateLimited: "ترسل الرسائل بسرعة كبيرة. يرجى الانتظار قليلًا."
+      rateLimited: "ترسل الرسائل بسرعة كبيرة. يرجى الانتظار قليلًا.",
+      busy: "يرجى انتظار الرد الحالي."
     }
   }[LANG];
 
@@ -167,6 +169,7 @@
   var name = load("name");
   var started = false;
   var busy = false;
+  var retryText = null; // a message the server never got, offered again once the chat restarts
 
   function post(path, body) {
     return fetch(API + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -190,7 +193,11 @@
         ready(true);
         input.focus();
       })
-      .catch(function () { dots.remove(); add("err", T.error); });
+      .catch(function () {
+        dots.remove(); add("err", T.error);
+        started = false;
+        // Reopening retries initialization; controls stay disabled without a session.
+      });
   }
 
   // Name screen first; the chat input after the name is known.
@@ -213,7 +220,9 @@
       addButtons(data.buttons || []);
     } else if (event === "error") {
       ctx.dots.remove();
-      add("err", data.message || (data.code === "rate_limited" ? T.rateLimited : T.error));
+      // Codes sent before the server knows the chat's language get our own translation.
+      var own = { rate_limited: T.rateLimited, busy: T.busy }[data.code];
+      add("err", own || data.message || T.error);
     } else if (event === "done") {
       // The server knows the name once the chat is no longer "none".
       if (!name && data.lead_status && data.lead_status !== "none") {
@@ -231,6 +240,7 @@
       .then(function (r) {
         if (r.status === 404) { // chat expired on the server: start fresh
           ctx.dots.remove(); sessionId = null; name = null; save("session", null); save("name", null);
+          retryText = text;
           return startSession();
         }
         if (!r.body || (r.headers.get("content-type") || "").indexOf("text/event-stream") < 0) throw new Error(r.status);
@@ -267,7 +277,10 @@
     add("me", text);
     if (!name) {
       input.dataset.pendingName = text;
-      send(text).then(function () { nameMode(!name); });
+      send(text).then(function () {
+        nameMode(!name);
+        if (name && retryText) { input.value = retryText; retryText = null; } // ready to send again
+      });
     } else {
       send(text);
     }

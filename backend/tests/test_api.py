@@ -30,6 +30,13 @@ class FakeRedis:
     async def delete(self, key):
         self.data.pop(key, None)
 
+    async def eval(self, script, numkeys, key, token):
+        """Only the lock release script: delete the key if it still holds our token."""
+        if self.data.get(key) == token:
+            del self.data[key]
+            return 1
+        return 0
+
     async def incr(self, key):
         self.data[key] = int(self.data.get(key, 0)) + 1
         return self.data[key]
@@ -227,3 +234,35 @@ def test_widget_is_served_as_javascript(api):
     assert len(resp.content) < 30_000  # PLAN.md: under 30 KB
     assert "attachShadow" in resp.text  # isolated from the site's CSS
     assert ".innerHTML = ICON" in resp.text and resp.text.count("innerHTML") == 1  # never model text
+
+
+def test_second_message_while_replying_gets_a_busy_event(api):
+    sid = api.post("/session", json={"language": "en"}).json()["session_id"]
+    api.redis.data[f"chat:lock:{sid}"] = "someone-else"
+    resp = api.post("/chat", json={"session_id": sid, "message": "hi"})
+    assert events(resp)[0][1]["code"] == "busy"
+    assert api.redis.data[f"chat:lock:{sid}"] == "someone-else"  # their lease is untouched
+
+
+def test_lock_is_released_after_a_refused_message(api):
+    sid = api.post("/session", json={"language": "en"}).json()["session_id"]
+    assert api.post("/chat", json={"session_id": sid, "message": "x" * 501}).status_code == 400
+    assert f"chat:lock:{sid}" not in api.redis.data
+
+
+def test_ip_limit_applies_before_any_database_lookup(api, monkeypatch):
+    lookups = []
+
+    async def find_conversation(session_id):
+        lookups.append(session_id)
+
+    monkeypatch.setattr(main.repo, "find_conversation", find_conversation)
+    codes = [api.post("/chat", json={"session_id": str(uuid.uuid4()), "message": "hi"}).status_code
+             for _ in range(25)]
+    assert codes[:20] == [404] * 20 and set(codes[20:]) == {429}
+    assert len(lookups) == 20  # made-up ids past the limit never reach Supabase
+
+
+def test_huge_bodies_are_refused_early(api):
+    sid = api.post("/session", json={"language": "en"}).json()["session_id"]
+    assert api.post("/chat", json={"session_id": sid, "message": "x" * 20_000}).status_code == 422

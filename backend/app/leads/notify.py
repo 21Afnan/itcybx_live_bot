@@ -133,7 +133,9 @@ async def append_to_sheet(row: list[str]) -> None:
 
 
 RETRY_DELAYS = [10, 60]  # seconds before the 2nd and 3rd try of a failed alert
-RETRY_WINDOW = (timedelta(minutes=15), timedelta(days=1))  # leads the hourly retry looks at
+# Leads the hourly retry looks at. A week, so a weekend-long SMTP or Google
+# outage doesn't lose leads; each hourly try only resends what failed.
+RETRY_WINDOW = (timedelta(minutes=15), timedelta(days=7))
 
 
 def channels() -> dict:
@@ -166,6 +168,18 @@ async def notify_team(state: ChatState) -> None:
     if not channels():
         log.warning("New lead, but no alert channel is set up (SMTP_* / GOOGLE_SHEET_ID in .env)")
         return
+    # One sender per lead at a time, across workers: without this the hourly
+    # retry could resend an alert that is still going out.
+    async with repo.alert_lock(session_id) as locked:
+        if not locked:
+            log.info("Lead alert already being sent by another worker")
+            return
+        await send_alerts(state)
+
+
+async def send_alerts(state: ChatState) -> None:
+    """The channels that haven't worked yet for this lead; marks each one that does."""
+    session_id = state["session_id"]
     todo = {name: send for name, send in channels().items()
             if name not in await repo.sent_alerts(session_id)}
     if todo:

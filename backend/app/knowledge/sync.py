@@ -60,6 +60,8 @@ CHROME_CLASSES = ["itcybx-header-root", "itcybx-footer-root", "itcybx-ck"]
 # pages; it is kept once, on the contact page.
 CONTACT_BLOCK_CLASS = "itcbx-cta-root"
 
+HISTORY_KEEP = 20  # backups kept in knowledge/.history (about 5 months of weekly changes)
+
 UNWANTED_TAGS = ["script", "style", "noscript", "svg", "iframe", "img",
                  "form", "button", "header", "nav", "footer"]
 
@@ -222,7 +224,15 @@ def apply_changes(pages: dict[str, str], knowledge_dir: Path) -> SyncResult:
         path.write_text(pages[name], encoding="utf-8")
     for name in result.removed:
         (knowledge_dir / name).unlink()
+    prune_history(knowledge_dir)
     return result
+
+
+def prune_history(knowledge_dir: Path, keep: int = HISTORY_KEEP) -> None:
+    """Delete all but the newest `keep` backups (names sort by time)."""
+    backups = sorted(p for p in (knowledge_dir / ".history").glob("*") if p.is_dir())
+    for old in backups[:-keep]:
+        shutil.rmtree(old)
 
 
 def rollback(knowledge_dir: Path = KNOWLEDGE_DIR) -> list[str]:

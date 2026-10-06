@@ -17,13 +17,23 @@ URL_BARE = re.compile(
     re.I,
 )
 E164 = re.compile(r"^\+[1-9]\d{7,14}$")
+# 2026-10-06, 06/10/2026, 6.10.26: never phone numbers.
+DATE = re.compile(r"\b(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})\b")
+# Country codes of the markets we serve (KSA, UAE, Qatar, Kuwait, Bahrain, Oman,
+# UK, Pakistan). People often write them without "+": 966501234567.
+COUNTRY_CODES = ("966", "971", "974", "965", "973", "968", "44", "92")
 
 PLATFORMS = {
     "shopify": "Shopify", "شوبيفاي": "Shopify",
-    "salla": "Salla", "سلة": "Salla",
-    "zid": "Zid", "زد": "Zid",
+    "salla": "Salla", "zid": "Zid",
     "woocommerce": "other", "magento": "other", "wix": "other", "bigcommerce": "other",
 }
+
+# In Arabic, سلة also means "basket" (سلة التسوق, the shopping cart) and زد
+# means "increase" (زد مبيعاتي). They count as platforms only after a word
+# that points at a platform, or when the bot has just asked for the platform.
+ARABIC_PLATFORMS = {"سلة": "Salla", "زد": "Zid"}
+PLATFORM_LEADS = ["على", "منصة", "متجر", "متجري", "متجرنا", "عبر", "نستخدم", "أستخدم", "استخدم"]
 
 MARKETS = {
     "ksa": "KSA", "saudi": "KSA", "riyadh": "KSA", "jeddah": "KSA", "السعودية": "KSA", "الرياض": "KSA",
@@ -37,7 +47,9 @@ INTEREST_WORDS = [
     "price", "pricing", "cost", "how much", "quote", "audit", "book", "booking", "work with you",
     "work together", "hire", "get started", "sign up", "talk to", "speak to", "call", "contact",
     "someone", "person", "human", "meeting",
-    "سعر", "الأسعار", "تكلفة", "كم", "تقييم", "حجز", "احجز", "تواصل", "اتصال", "مكالمة", "شخص",
+    # Not a bare "كم" ("how many / how much"): it starts most Arabic questions.
+    "سعر", "السعر", "الأسعار", "تكلفة", "التكلفة", "بكم", "كم سعر", "كم السعر", "كم تكلفة",
+    "كم التكلفة", "تقييم", "حجز", "احجز", "تواصل", "اتصال", "مكالمة", "شخص",
 ]
 
 # Words that show a number in the message is meant as a phone number.
@@ -52,6 +64,23 @@ NOT_NAME_WORDS = {
     "good", "morning", "afternoon", "evening", "yes", "no", "ok", "okay", "sure", "thanks",
     "thank", "you", "help", "test", "price", "pricing",
     "مرحبا", "أهلا", "اهلا", "السلام", "عليكم", "نعم", "لا", "شكرا",
+}
+
+# A first word that starts a question or a request, not a name ("what do you do",
+# "can you help", "I need ads"). "I am Sara" is fine: clean_name drops "I am".
+NOT_NAME_START = {
+    "what", "whats", "what's", "how", "why", "when", "where", "who", "which", "can", "could",
+    "would", "should", "do", "does", "did", "is", "are", "was", "will", "tell", "i", "we",
+    "my", "our", "need", "want", "please", "looking", "show", "give",
+    "هل", "ما", "ماذا", "كيف", "كم", "لماذا", "متى", "أين", "وين", "ممكن", "أريد", "اريد",
+    "أبغى", "ابغى", "ابي", "أبي", "عندي", "نحن", "عندنا",
+}
+
+# Words about the store or the service, never part of a name ("Shopify store").
+BUSINESS_WORDS = {
+    "store", "shop", "website", "site", "sales", "ads", "marketing", "audit", "seo", "ecommerce",
+    "e-commerce", "متجر", "متجري", "مبيعات", "تسويق", "إعلانات", "اعلانات", "موقع",
+    *PLATFORMS, *ARABIC_PLATFORMS,
 }
 
 CONTACT_WORDS = [
@@ -75,12 +104,24 @@ class Found:
 def valid_name(name: str) -> bool:
     """2-60 characters, and looks like a name rather than a question or contact detail."""
     name = name.strip()
+    words = [w.strip(",.!") for w in name.lower().split()]
     return (
         2 <= len(name) <= 60
-        and len(name.split()) <= 4
+        and len(words) <= 4
         and not any(ch in name for ch in "?؟@/:")
         and not any(ch.isdigit() for ch in name)
-        and not all(word in NOT_NAME_WORDS for word in name.lower().split())
+        and not all(word in NOT_NAME_WORDS for word in words)
+        and not looks_like_question(name)
+    )
+
+
+def looks_like_question(text: str) -> bool:
+    """The visitor asked something instead of giving their name."""
+    words = [w.strip(",.!") for w in text.lower().split()]
+    return bool(words) and (
+        any(ch in text for ch in "?؟")
+        or words[0] in NOT_NAME_START
+        or any(word in BUSINESS_WORDS for word in words)
     )
 
 
@@ -89,24 +130,35 @@ def clean_name(text: str) -> str:
     text = text.strip().strip(".!")
     text = re.sub(r"^(hi|hello|hey|salam|مرحبا|أهلا)[,!\s]+", "", text, flags=re.I)
     text = re.sub(r"^(my name is|my name's|i am|i'm|it's|this is|name:|اسمي|أنا)\s+", "", text, flags=re.I)
+    text = " ".join(text.split())  # one line: the name goes into the alert email's subject
     return text.strip().strip(".!")[:60]
 
 
-def normalise_phone(raw: str) -> str:
-    """Digits only, with a leading +. '00966 50-123 4567' -> '+966501234567'."""
+def normalise_phone(raw: str, expecting_phone: bool = False) -> str:
+    """Digits only, with a leading +. '00966 50-123 4567' -> '+966501234567'.
+
+    When the number is meant as a phone, one that starts with a known country
+    code and has the full length gets its "+": '966501234567' -> '+966501234567'.
+    """
     digits = re.sub(r"\D", "", raw)
     if raw.strip().startswith("00"):
         digits = digits[2:]
         return "+" + digits
-    return ("+" + digits) if raw.strip().startswith("+") else digits
+    if raw.strip().startswith("+"):
+        return "+" + digits
+    if expecting_phone and 11 <= len(digits) <= 12 and digits.startswith(COUNTRY_CODES):
+        return "+" + digits
+    return digits
 
 
-def find(text: str, expecting_phone: bool = False) -> Found:
+def find(text: str, expecting_phone: bool = False, expecting_platform: bool = False) -> Found:
     """Look for email, WhatsApp, platform, market and store URL in a message.
 
     A number without a country code is only flagged when it is meant as a
     phone number: the bot just asked for one, or the message says so.
     Otherwise "we do 10000000 a year" would be taken for a phone number.
+    `expecting_platform`: the bot just asked for the platform, so a bare
+    "سلة" or "زد" is the answer.
     """
     found = Found()
 
@@ -125,8 +177,8 @@ def find(text: str, expecting_phone: bool = False) -> Found:
     plain = URL_BARE.sub(" ", URL_WITH_SCHEME.sub(" ", without_emails))
     lower = plain.lower()
     expecting_phone = expecting_phone or mentions(lower, PHONE_WORDS)
-    for match in PHONE.findall(plain):
-        number = normalise_phone(match)
+    for match in PHONE.findall(DATE.sub(" ", plain)):
+        number = normalise_phone(match, expecting_phone)
         if E164.match(number):
             found.whatsapp = number
             break
@@ -137,6 +189,12 @@ def find(text: str, expecting_phone: bool = False) -> Found:
         if mentions(lower, [word]):
             found.platform = platform
             break
+    else:
+        for word, platform in ARABIC_PLATFORMS.items():
+            pointed_at = [f"{lead} {word}" for lead in PLATFORM_LEADS]
+            if mentions(lower, pointed_at) or (expecting_platform and mentions(lower, [word])):
+                found.platform = platform
+                break
 
     for word, market in MARKETS.items():
         if mentions(lower, [word]):

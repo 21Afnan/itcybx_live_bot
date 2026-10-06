@@ -53,6 +53,32 @@ MID_CHAT_SYSTEM_MODELS = ("claude-sonnet-5-5", "claude-opus-5", "claude-opus-4-8
 COOLDOWN_SECONDS = 60
 _resting_until: dict[str, float] = {}  # model/key name -> time it may be tried again
 
+# Models whose thinking can't be turned off (or is on unless told otherwise):
+# their thinking counts against max_tokens, so they get this much extra room
+# or the reply itself would be cut short.
+THINKING_ALLOWANCE = 2000
+
+# One client per provider and key, reused: a new client per reply would open
+# a new connection (and TLS handshake) every time.
+_clients: dict[tuple[str, str], object] = {}
+
+
+def claude_client() -> anthropic.AsyncAnthropic:
+    key = settings.anthropic_api_key.get_secret_value()
+    if ("claude", key) not in _clients:
+        _clients["claude", key] = anthropic.AsyncAnthropic(
+            api_key=key, timeout=settings.llm_timeout_seconds, max_retries=1,
+        )
+    return _clients["claude", key]
+
+
+def mistral_client(api_key: str) -> Mistral:
+    if ("mistral", api_key) not in _clients:
+        _clients["mistral", api_key] = Mistral(
+            api_key=api_key, timeout_ms=int(settings.llm_timeout_seconds * 1000),
+        )
+    return _clients["mistral", api_key]
+
 
 class LLMUnavailable(Exception):
     """None of the models could answer."""
@@ -85,14 +111,10 @@ async def claude_stream(
         messages = [*messages, {"role": "system", "content": instruction}]
     elif instruction:
         system_blocks = [*system_blocks, {"type": "text", "text": instruction}]  # after the cached block
-    client = anthropic.AsyncAnthropic(
-        api_key=settings.anthropic_api_key.get_secret_value(),
-        timeout=settings.llm_timeout_seconds,
-        max_retries=1,
-    )
-    async with client.messages.stream(
+    max_tokens = settings.max_output_tokens + (THINKING_ALLOWANCE if thinks(model) else 0)
+    async with claude_client().messages.stream(
         model=model,
-        max_tokens=settings.max_output_tokens,
+        max_tokens=max_tokens,
         system=system_blocks,
         messages=messages,
         **claude_speed_options(model),
@@ -103,10 +125,19 @@ async def claude_stream(
 
     if final.stop_reason == "refusal":
         raise anthropic.AnthropicError("Claude declined to answer")
+    if final.stop_reason == "max_tokens":
+        log.warning("Claude reply cut off at max_tokens (%s); raise MAX_OUTPUT_TOKENS", model)
     usage.model_used = final.model
     usage.tokens_in = final.usage.input_tokens + (final.usage.cache_creation_input_tokens or 0)
     usage.cached_tokens = final.usage.cache_read_input_tokens or 0
     usage.tokens_out = final.usage.output_tokens
+
+
+def thinks(model: str) -> bool:
+    """True for Claude models that think with the settings below (see claude_speed_options)."""
+    if model.startswith("claude-sonnet-5-5"):
+        return False  # thinking turned off with "between_tools"
+    return model.startswith(("claude-opus-5", "claude-fable", "claude-mythos", "claude-sonnet-5"))
 
 
 def claude_speed_options(model: str) -> dict:
@@ -139,10 +170,7 @@ async def mistral_stream(
         system = f"{system}\n\n---\n\n{rules}\n\n{FALLBACK_REMINDER}"
     if instruction:
         system = f"{system}\n\n# Note for this reply\n{instruction}"
-    client = Mistral(
-        api_key=api_key or settings.mistral_api_key.get_secret_value(),
-        timeout_ms=int(settings.llm_timeout_seconds * 1000),
-    )
+    client = mistral_client(api_key or settings.mistral_api_key.get_secret_value())
     response = await client.chat.stream_async(
         model=settings.mistral_model,
         max_tokens=settings.max_output_tokens,
@@ -153,6 +181,8 @@ async def mistral_stream(
             chunk = event.data
             if chunk.choices and chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content
+            if chunk.choices and chunk.choices[0].finish_reason == "length":
+                log.warning("Mistral reply cut off at max_tokens; raise MAX_OUTPUT_TOKENS")
             if chunk.usage:
                 usage.tokens_in = chunk.usage.prompt_tokens or 0
                 usage.tokens_out = chunk.usage.completion_tokens or 0

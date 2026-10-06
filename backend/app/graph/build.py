@@ -15,7 +15,7 @@ from typing import AsyncIterator
 from langgraph.graph import END, START, StateGraph
 
 from app.graph import nodes
-from app.graph.state import ChatState, new_state
+from app.graph.state import ROUTING_FIELDS, ChatState, new_state
 
 GREETING = {
     "en": "Hi! I'm the IT Cybx assistant. What's your name?",
@@ -61,6 +61,10 @@ async def run_turn(state: ChatState, message: str) -> AsyncIterator[dict]:
             yield chunk
         else:
             final = chunk
+    if final.get("failed"):
+        # The AI never wrote the reply, so any question it was told to ask was
+        # not asked: keep the counters as they were (lead details still count).
+        final = {**final, **{field: state.get(field) for field in ROUTING_FIELDS}}
     yield {"type": "state", "state": final}
 
 

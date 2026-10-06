@@ -31,6 +31,8 @@ from app.leads.notify import notify_team
 from app.security import ratelimit
 
 CHECK_TIMEOUT_SECONDS = 10  # the first connection to Supabase can take a few seconds
+SHUTDOWN_GRACE_SECONDS = 25  # Docker's default stop timeout is 10s: raise it with stop_grace_period
+MAX_BODY_CHARS = 10_000  # far above MAX_MESSAGE_CHARS: only stops huge request bodies early
 
 WELCOME_BACK = {
     "en": "Welcome back, {name}! How can I help you today?",
@@ -46,6 +48,7 @@ TOO_FAST = {
     "en": "You're sending messages too fast. Please wait a moment.",
     "ar": "ترسل الرسائل بسرعة كبيرة. يرجى الانتظار قليلًا.",
 }
+BUSY = "Please wait for the current reply."  # the widget shows its own translation
 TOO_LONG = {
     "en": "That message is too long. Please keep it under {n} characters.",
     "ar": "الرسالة طويلة جدًا. يرجى ألا تتجاوز {n} حرفًا.",
@@ -61,6 +64,10 @@ async def lifespan(app: FastAPI):
     yield
     if scheduler:
         scheduler.shutdown(wait=False)
+    # Let replies and lead alerts that are still running finish (a redeploy
+    # would otherwise cut them off); the hourly job catches any alert left.
+    if running_turns:
+        await asyncio.wait(running_turns, timeout=SHUTDOWN_GRACE_SECONDS)
 
 
 app = FastAPI(title="IT Cybx Chatbot", lifespan=lifespan)
@@ -141,7 +148,7 @@ async def start_session(body: SessionRequest, request: Request):
 
 class ChatRequest(BaseModel):
     session_id: uuid.UUID
-    message: str = Field(min_length=1)
+    message: str = Field(min_length=1, max_length=MAX_BODY_CHARS)
 
 
 def sse(event: str, data: dict) -> str:
@@ -156,46 +163,80 @@ def background(coro) -> None:
     """Run work after the reply without making the visitor wait for it."""
     task = asyncio.create_task(coro)
     running_turns.add(task)
-    task.add_done_callback(running_turns.discard)
+    task.add_done_callback(finished)
 
 
-async def process_turn(state: dict, message: str, out: asyncio.Queue) -> None:
+def finished(task: asyncio.Task) -> None:
+    running_turns.discard(task)
+    if not task.cancelled() and task.exception():
+        log.error("Background work failed", exc_info=task.exception())
+
+
+async def process_turn(state: dict, message: str, out: asyncio.Queue, token: str) -> None:
     """Run the bot on one message, putting SSE events on `out`, then save it.
 
     Runs as its own task, so the chat is still saved if the visitor closes
     the page halfway through the reply.
     """
     try:
-        final = None
-        try:
-            async for event in run_turn(state, message):
-                if event["type"] == "token":
-                    out.put_nowait(sse("token", {"text": event["text"]}))
-                elif event["type"] == "error":
-                    out.put_nowait(sse("error", {"code": event["code"], "message": event["message"]}))
-                elif event["type"] == "state":
-                    final = event["state"]
-        except Exception:
-            log.exception("Bot failed on a message")
-            out.put_nowait(sse("error", {"code": "unavailable", "message": UNAVAILABLE[state["language"]]}))
-            return
-
-        if final.get("actions"):
-            out.put_nowait(sse("actions", {"buttons": final["actions"]}))
-        message_id = None
-        try:
-            await sessions.save(final)
-            message_id = await repo.save_turn(final, message, final.get("reply", ""),
-                                              final.get("usage") or {})
-        except Exception:
-            log.exception("Could not save the message")  # the visitor already has the reply
-        if final.get("lead_just_completed"):
-            background(notify_team(final))
-        out.put_nowait(sse("done", {"message_id": message_id,
-                                    "lead_status": final.get("lead_status", "none")}))
+        await asyncio.wait_for(process_turn_work(state, message, out), sessions.TURN_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        log.warning("Chat turn exceeded its time limit")
+        out.put_nowait(sse("error", {"code": "unavailable", "message": UNAVAILABLE[state["language"]]}))
+        # The save may have committed just before the cut-off: drop the cached
+        # copy so the next turn rebuilds from what the database really has.
+        await forget_cached_state(state["session_id"])
     finally:
-        await sessions.unlock(state["session_id"])
-        out.put_nowait(None)  # end of stream
+        try:
+            await sessions.unlock(state["session_id"], token)
+        except Exception:
+            log.exception("Could not release chat lock")
+        finally:
+            out.put_nowait(None)
+
+
+async def process_turn_work(state: dict, message: str, out: asyncio.Queue) -> None:
+    final = None
+    try:
+        async for event in run_turn(state, message):
+            if event["type"] == "token":
+                out.put_nowait(sse("token", {"text": event["text"]}))
+            elif event["type"] == "error":
+                out.put_nowait(sse("error", {"code": event["code"], "message": event["message"]}))
+            elif event["type"] == "state":
+                final = event["state"]
+    except Exception:
+        log.exception("Bot failed on a message")
+        out.put_nowait(sse("error", {"code": "unavailable", "message": UNAVAILABLE[state["language"]]}))
+        return
+
+    if final.get("actions"):
+        out.put_nowait(sse("actions", {"buttons": final["actions"]}))
+    message_id = None
+    try:
+        message_id = await repo.save_turn(final, message, final.get("reply", ""),
+                                          final.get("usage") or {})
+    except Exception:
+        log.exception("Could not save the message")
+        out.put_nowait(sse("error", {"code": "unavailable", "message": UNAVAILABLE[state["language"]]}))
+        return  # don't cache state that the database could not commit
+    try:
+        await sessions.save(final)
+    except Exception:
+        log.exception("Could not cache the message")
+        # Remove the older cache so the next turn rebuilds committed state.
+        await forget_cached_state(state["session_id"])
+    if final.get("lead_just_completed") and message_id:
+        background(notify_team(final))
+    out.put_nowait(sse("done", {"message_id": message_id,
+                                "lead_status": final.get("lead_status", "none")}))
+
+
+async def forget_cached_state(session_id: str) -> None:
+    try:
+        await sessions.forget(session_id)
+    except Exception:
+        log.exception("Could not invalidate old chat state")
 
 
 async def reply_events(out: asyncio.Queue):
@@ -210,21 +251,41 @@ async def chat(body: ChatRequest, request: Request):
     message = body.message.strip()
     if not message:
         raise HTTPException(400, "Message is empty")
-    state = await load_state(str(body.session_id))
+    # Per visitor IP first, before any lock or database work, so made-up
+    # session ids can't be used to hammer Supabase. The chat's language isn't
+    # known yet; the widget shows its own translation for this code.
+    if not await ratelimit.allow(f"chat:ip:{client_ip(request)}"):
+        return sse_error(429, "rate_limited", TOO_FAST["en"])
+    session_id = str(body.session_id)
+    # Load under the lease: a queued request must see the preceding commit.
+    token = await sessions.lock(session_id)
+    if not token:
+        return sse_error(429, "busy", BUSY)
+    try:
+        return await asyncio.wait_for(
+            start_chat_turn(body, request, message, session_id, token), CHECK_TIMEOUT_SECONDS
+        )
+    finally:
+        # start_chat_turn hands the lease to process_turn only on success.
+        if not getattr(request.state, "turn_started", False):
+            await sessions.unlock(session_id, token)
+
+
+async def start_chat_turn(body: ChatRequest, request: Request, message: str,
+                          session_id: str, token: str):
+    state = await load_state(session_id)
     if state is None:
         raise HTTPException(404, "Unknown session_id")
     language = state["language"]
     if len(message) > settings.max_message_chars:
         return sse_error(400, "too_long", TOO_LONG[language].format(n=settings.max_message_chars))
-    if not (await ratelimit.allow(f"chat:ip:{client_ip(request)}")
-            and await ratelimit.allow(f"chat:session:{state['session_id']}")):
+    if not await ratelimit.allow(f"chat:session:{state['session_id']}"):
         return sse_error(429, "rate_limited", TOO_FAST[language])
-    if not await sessions.lock(state["session_id"]):
-        raise HTTPException(429, "Please wait for the current reply")
     # Started here, not inside the stream: if the visitor leaves before the
     # stream begins, the turn still runs, is saved and releases the lock.
     out: asyncio.Queue = asyncio.Queue()
-    background(process_turn(state, message, out))
+    background(process_turn(state, message, out, token))
+    request.state.turn_started = True
     return StreamingResponse(
         reply_events(out),
         media_type="text/event-stream",

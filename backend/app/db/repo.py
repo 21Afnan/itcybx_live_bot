@@ -1,9 +1,11 @@
 """Reading and saving chats in Supabase."""
 
 import uuid
+import hashlib
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 
 from app.db.engine import db_session
@@ -31,7 +33,7 @@ async def rebuild_state(conversation: Conversation) -> ChatState:
         lead = await db.scalar(select(Lead).where(Lead.conversation_id == conversation.id))
         rows = (await db.scalars(
             select(Message).where(Message.conversation_id == conversation.id)
-            .order_by(Message.created_at.desc()).limit(MAX_MESSAGES)
+            .order_by(Message.sequence.desc()).limit(MAX_MESSAGES)
         )).all()
     state = new_state(str(conversation.session_id), conversation.language)
     state.update(
@@ -39,6 +41,9 @@ async def rebuild_state(conversation: Conversation) -> ChatState:
         summary=conversation.summary or "",
         lead_status=conversation.lead_status,
         messages=[{"role": m.role, "content": m.content} for m in reversed(rows)],
+        capture_asks=conversation.capture_asks,
+        qualify_asked=conversation.qualify_asked or [],
+        last_step=conversation.last_step,
     )
     if lead:
         state["lead"] = {f: getattr(lead, f) or "" for f in state["lead"]}
@@ -55,6 +60,8 @@ async def save_turn(state: ChatState, user_message: str, reply: str, usage: dict
             select(Conversation).where(Conversation.session_id == uuid.UUID(state["session_id"]))
         )
         db.add(Message(conversation_id=conversation.id, role="user", content=user_message))
+        # Flush the visitor first so identity values encode the turn order.
+        await db.flush()
         db.add(Message(
             id=reply_id, conversation_id=conversation.id, role="assistant", content=reply,
             model_used=usage.get("model_used") or None,
@@ -66,6 +73,9 @@ async def save_turn(state: ChatState, user_message: str, reply: str, usage: dict
                 lead_status=state.get("lead_status", "none"),
                 summary=state.get("summary") or None,
                 last_message_at=func.now(),
+                capture_asks=state.get("capture_asks", 0),
+                qualify_asked=state.get("qualify_asked") or [],
+                last_step=state.get("last_step", ""),
             )
         )
         if state.get("name"):
@@ -95,6 +105,16 @@ async def record_kb_versions(hashes: dict[str, str]) -> None:
 
 
 ALERT_COLUMNS = {"email": Lead.emailed_at, "sheet": Lead.sheet_added_at}
+
+
+@asynccontextmanager
+async def alert_lock(session_id: str):
+    """Serialize alert attempts across workers; release on disconnect or exit."""
+    key = int.from_bytes(hashlib.sha256(f"lead-alert:{session_id}".encode()).digest()[:8],
+                         "big", signed=True)
+    async with db_session() as db:
+        acquired = await db.scalar(text("SELECT pg_try_advisory_xact_lock(:key)"), {"key": key})
+        yield bool(acquired)
 
 
 def _lead_of(session_id: str):

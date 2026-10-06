@@ -10,9 +10,10 @@ BACKEND = Path(__file__).resolve().parents[1]
 
 EXPECTED_COLUMNS = {
     "conversations": {"id", "session_id", "name", "language", "source_page", "started_at",
-                      "last_message_at", "lead_status", "summary"},
+                      "last_message_at", "lead_status", "summary", "capture_asks",
+                      "qualify_asked", "last_step"},
     "messages": {"id", "conversation_id", "role", "content", "model_used", "tokens_in",
-                 "tokens_out", "created_at"},
+                 "tokens_out", "created_at", "sequence"},
     "leads": {"id", "conversation_id", "name", "email", "whatsapp", "platform", "market",
               "store_url", "status", "created_at", "notified_at", "emailed_at", "sheet_added_at"},
     "kb_versions": {"id", "file", "content_hash", "synced_at"},

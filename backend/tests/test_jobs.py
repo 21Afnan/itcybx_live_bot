@@ -45,3 +45,13 @@ def test_a_job_still_runs_when_redis_is_down(monkeypatch):
 
     asyncio.run(jobs.run_once("lead-alerts", job, lock_seconds=60))
     assert runs == [1]
+
+
+def test_only_the_first_worker_claims_the_sync_email(monkeypatch):
+    redis = LockRedis()
+    monkeypatch.setattr(jobs.sessions, "get_redis", lambda: redis)
+
+    async def two_containers():
+        return [await jobs.claim("sync-email", 3600), await jobs.claim("sync-email", 3600)]
+
+    assert asyncio.run(two_containers()) == [True, False]

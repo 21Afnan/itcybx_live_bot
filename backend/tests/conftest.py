@@ -16,8 +16,10 @@ import pytest  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def fresh_model_chain():
-    """Each test starts with no model resting after an earlier failure."""
+    """Each test starts with no model resting after an earlier failure, and no cached clients."""
     from app.llm import models
     models._resting_until.clear()
+    models._clients.clear()  # tests swap in fake SDK clients
     yield
     models._resting_until.clear()
+    models._clients.clear()

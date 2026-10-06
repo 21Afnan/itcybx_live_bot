@@ -12,11 +12,12 @@ services:
     volumes:
       - ./backend:/code # code changes apply without rebuilding
       - ./widget:/widget
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --proxy-headers
+    command: sh -c "alembic upgrade head || echo 'WARNING: database migrations failed' >&2; exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --proxy-headers"
     depends_on:
       redis:
         condition: service_healthy
     restart: unless-stopped
+    stop_grace_period: 30s # time for replies and lead alerts to finish on redeploy
 
   redis:
     image: redis:7-alpine

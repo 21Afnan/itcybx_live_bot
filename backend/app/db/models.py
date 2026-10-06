@@ -7,7 +7,7 @@ Tables are created and changed only through Alembic migrations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, Identity, Integer, JSON, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -38,6 +38,9 @@ class Conversation(Base):
     last_message_at: Mapped[datetime] = created_now()
     lead_status: Mapped[str] = mapped_column(String(10), server_default="none")
     summary: Mapped[str | None] = mapped_column(Text)
+    capture_asks: Mapped[int] = mapped_column(Integer, server_default="0")
+    qualify_asked: Mapped[list] = mapped_column(JSON, server_default="[]")
+    last_step: Mapped[str] = mapped_column(String(20), server_default="")
 
 
 class Message(Base):
@@ -56,6 +59,7 @@ class Message(Base):
     tokens_in: Mapped[int | None] = mapped_column(Integer)
     tokens_out: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = created_now()
+    sequence: Mapped[int] = mapped_column(BigInteger, Identity(), unique=True)
 
 
 class Lead(Base):

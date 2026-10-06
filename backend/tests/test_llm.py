@@ -229,6 +229,7 @@ def claude_request(monkeypatch, model: str) -> dict:
 
     monkeypatch.setattr(models.anthropic, "AsyncAnthropic", FakeClient)
     monkeypatch.setattr(models.settings, "anthropic_model", model)
+    models._clients.clear()  # a fresh fake client for this request
 
     async def run():
         history = [{"role": "user", "content": "Hi"}]
@@ -253,3 +254,10 @@ def test_other_claude_models_get_only_settings_they_accept(monkeypatch):
     assert request["system"][0]["cache_control"] == {"type": "ephemeral"}
     assert request["system"][1] == {"type": "text", "text": "Ask their platform"}
     assert models.claude_speed_options("claude-haiku-4-5") == {}
+
+
+def test_thinking_models_get_room_for_their_thinking(monkeypatch):
+    monkeypatch.setattr(models.settings, "max_output_tokens", 400)
+    assert claude_request(monkeypatch, "claude-sonnet-5-5")["max_tokens"] == 400  # thinking off
+    assert claude_request(monkeypatch, "claude-opus-5-5")["max_tokens"] == 400 + models.THINKING_ALLOWANCE
+    assert not models.thinks("claude-haiku-4-5") and models.thinks("claude-sonnet-5")

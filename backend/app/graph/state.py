@@ -4,6 +4,7 @@ from typing import TypedDict
 
 LEAD_FIELDS = ["email", "whatsapp", "platform", "market", "store_url"]
 QUALIFY_FIELDS = ["platform", "market", "store_url"]  # asked in this order, one per turn
+ROUTING_FIELDS = ["capture_asks", "qualify_asked", "last_step"]  # what was asked, and when
 MAX_MESSAGES = 8  # older messages are folded into `summary`
 
 
@@ -30,6 +31,7 @@ class ChatState(TypedDict, total=False):
     reply: str
     actions: list[dict]  # contact buttons to show under the reply
     usage: dict  # model_used, tokens_in, tokens_out, cached_tokens, fallback_used
+    failed: bool  # the AI couldn't answer; the visitor got the error message
 
 
 def new_state(session_id: str, language: str) -> ChatState:

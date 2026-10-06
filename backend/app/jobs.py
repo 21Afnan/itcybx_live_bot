@@ -7,9 +7,15 @@
 
 With several API workers each one starts this scheduler, so every job
 first takes a short Redis lock and only one worker runs it.
+
+The knowledge files live inside each container, so the sync is locked per
+container (several workers of one container share its files); with more
+than one container each keeps its own files current, and only the first
+to sync emails the team about the changes.
 """
 
 import logging
+import socket
 from datetime import datetime, timedelta, timezone
 
 from app import sessions
@@ -20,27 +26,35 @@ from app.leads.notify import retry_unsent_alerts
 log = logging.getLogger("chatbot.jobs")
 
 STARTUP_SYNC_DELAY = timedelta(seconds=60)  # let the server settle first
+HOST = socket.gethostname()  # the container's id in Docker
+
+
+async def claim(name: str, lock_seconds: int) -> bool:
+    """True for the first worker to ask within `lock_seconds` (or if Redis is down)."""
+    try:
+        return bool(await sessions.get_redis().set(f"job:lock:{name}", "1", nx=True, ex=lock_seconds))
+    except Exception:
+        log.warning("Redis unavailable, running %s without a lock", name)
+        return True
 
 
 async def run_once(name: str, job, lock_seconds: int) -> None:
     """Run `job` unless another worker started it within `lock_seconds`."""
-    try:
-        if not await sessions.get_redis().set(f"job:lock:{name}", "1", nx=True, ex=lock_seconds):
-            return
-    except Exception:
-        log.warning("Redis unavailable, running %s without a lock", name)
-    await job()
+    if await claim(name, lock_seconds):
+        await job()
 
 
 def start_scheduler():
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
     async def weekly_sync():
-        await run_once("sync", scheduled_sync, lock_seconds=600)
+        async def sync_and_maybe_email():
+            await scheduled_sync(notify=await claim("sync-email", lock_seconds=3600))
+        await run_once(f"sync:{HOST}", sync_and_maybe_email, lock_seconds=600)
 
     async def startup_sync():
         # No email: the changes only bring the files back to the live website.
-        await run_once("sync", lambda: scheduled_sync(notify=False), lock_seconds=600)
+        await run_once(f"sync:{HOST}", lambda: scheduled_sync(notify=False), lock_seconds=600)
 
     async def lead_alerts():
         await run_once("lead-alerts", retry_unsent_alerts, lock_seconds=50 * 60)

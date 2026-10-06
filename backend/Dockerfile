@@ -18,7 +18,9 @@ RUN useradd --create-home bot && chown -R bot /code /widget
 USER bot
 
 EXPOSE 8000
+# Database migrations run first, so new code never meets old tables. If they
+# fail (database unreachable), the API still starts and /health reports it.
 # --proxy-headers: behind Nginx / Cloudflare, take the visitor's IP from
 # X-Forwarded-For (only from the proxies listed in FORWARDED_ALLOW_IPS), so
 # rate limits count each visitor, not the proxy.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
+CMD ["sh", "-c", "alembic upgrade head || echo 'WARNING: database migrations failed' >&2; exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers"]
