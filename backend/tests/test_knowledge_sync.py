@@ -142,14 +142,14 @@ def test_older_file_on_disk_is_refreshed_even_if_the_site_did_not_change(tmp_pat
 
 
 def test_removed_page_is_deleted_and_backed_up(tmp_path):
-    pages = first_sync(tmp_path)
+    first_sync(tmp_path)
     result = sync.apply_changes({"en/pricing.md": "price v1"}, tmp_path)
     assert result.removed == ["en/about.md"]
     assert not (tmp_path / "en/about.md").exists()
 
 
 def test_rollback_restores_previous_version(tmp_path):
-    pages = first_sync(tmp_path)
+    first_sync(tmp_path)
     sync.apply_changes({"en/pricing.md": "price v2", "en/new.md": "new page"}, tmp_path)
 
     restored = sync.rollback(tmp_path)
@@ -161,7 +161,7 @@ def test_rollback_restores_previous_version(tmp_path):
 
 
 def test_sync_never_touches_rules(tmp_path):
-    pages = first_sync(tmp_path)
+    first_sync(tmp_path)
     sync.apply_changes({"en/pricing.md": "price v2"}, tmp_path)
     sync.rollback(tmp_path)
     assert (tmp_path / "rules.md").read_text(encoding="utf-8") == "my rules"
